@@ -166,6 +166,34 @@ void GraphGpuWrapper::load_node_and_edge(std::string etype,
           etype, ntype, epath, npath, part_num, reverse);
 }
 
+void GraphGpuWrapper::load_shard_graph(std::string etype,
+                                       std::string ntype,
+                                       std::string spath,
+                                       int part_num,
+                                       int shard_id) {
+  ((GpuPsGraphTable *)graph_table)
+      ->cpu_graph_table_->load_shard_graph_file(
+          etype, ntype, spath, part_num, shard_id);
+}
+
+void GraphGpuWrapper::partition_shard(int shard_num, std::string part_path) {
+  ((GpuPsGraphTable *)graph_table)
+      ->cpu_graph_table_->partition_shard_file(shard_num, part_path);
+}
+
+void GraphGpuWrapper::clear_shard_graph(int etype_num, int gpu_num) {
+  ((GpuPsGraphTable *)graph_table)
+    ->cpu_graph_table_->clear_shard_graph_table();
+  
+  for (int i = 0; i < etype_num; ++i)
+    ((GpuPsGraphTable *)graph_table) -> clear_graph_info(i);
+  
+  for (int i = 0; i < gpu_num; ++i)
+    ((GpuPsGraphTable *)graph_table) -> clear_feature_info(i);
+
+  VLOG(0) << "Clear " << etype_num << " graphs on " << gpu_num << "GPUs.";
+}
+
 void GraphGpuWrapper::add_table_feat_conf(std::string table_name,
                                           std::string feat_name,
                                           std::string feat_dtype,

@@ -16,6 +16,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+#include <algorithm>
+#include <set>
+
 namespace paddle {
 namespace distributed {
 
@@ -28,6 +31,10 @@ class GraphEdgeBlob {
   int64_t get_id(int idx) { return id_arr[idx]; }
   virtual float get_weight(int idx) { return 1; }
   std::vector<int64_t>& export_id_array() { return id_arr; }
+  // virtual void set_unique() {
+  //   std::sort(id_arr.begin(), id_arr.end());
+  //   id_arr.erase(std::unique(id_arr.begin(), id_arr.end()), id_arr.end());
+  // }
 
  protected:
   std::vector<int64_t> id_arr;
@@ -39,6 +46,23 @@ class WeightedGraphEdgeBlob : public GraphEdgeBlob {
   virtual ~WeightedGraphEdgeBlob() {}
   virtual void add_edge(int64_t id, float weight);
   virtual float get_weight(int idx) { return weight_arr[idx]; }
+  // virtual void set_unique() {
+  //   if (id_arr.empty()) return;
+
+  //   std::set<int64_t> id_set;
+  //   decltype(id_arr) _id_arr(id_arr);
+  //   decltype(weight_arr) _weight_arr(weight_arr);
+  //   id_arr.clear();
+  //   weight_arr.clear();
+
+  //   for (size_t i = 0; i < _id_arr.size(); ++i) {
+  //     if (id_set.find(_id_arr[i]) == id_set.end()) {
+  //       id_set.insert(_id_arr[i]);
+  //       id_arr.push_back(_id_arr[i]);
+  //       weight_arr.push_back(_weight_arr[i]);
+  //     }
+  //   }
+  // }
 
  protected:
   std::vector<float> weight_arr;

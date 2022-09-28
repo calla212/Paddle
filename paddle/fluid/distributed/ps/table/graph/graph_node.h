@@ -83,6 +83,7 @@ class GraphNode : public Node {
   virtual uint64_t get_neighbor_id(int idx) { return edges->get_id(idx); }
   virtual float get_neighbor_weight(int idx) { return edges->get_weight(idx); }
   virtual size_t get_neighbor_size() { return edges->size(); }
+  // void unique_edge() {edges->set_unique();}
 
  protected:
   Sampler *sampler;
@@ -232,6 +233,20 @@ class FeatureNode : public Node {
       ss.reset(*(feat_str_begin + i));
       ss >> fea_ptrs[i];
     }
+  }
+
+  template <typename T>
+  static void parse_one_value_to_bytes(
+    paddle::string::str_ptr feat_str,
+    std::string *output) {
+    size_t num = output->length();
+    output->resize(num + sizeof(T));
+
+    T *fea_ptrs = (T *)(&(*output)[num]);
+
+    thread_local paddle::string::str_ptr_stream ss;
+    ss.reset(feat_str);
+    ss >> fea_ptrs[0];
   }
 
  protected:

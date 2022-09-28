@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <ctime>
 #include <functional>
+#include <fstream>
 #include <iostream>
 #include <list>
 #include <map>
@@ -544,11 +545,32 @@ class GraphTable : public Table {
                                   int part_num,
                                   bool reverse);
 
+  int load_shard_info(const std::string& spath, int ntype_size);
+  
+  int32_t load_shard_graph_file(std::string etype,
+                                std::string ntype,
+                                std::string spath,
+                                int part_num,
+                                int shard_id);
+
+  int32_t partition_shard_file(int shard_num, const std::string& part_path);
+
+  void clear_shard_graph_table(void);
+
+  // std::vector<std::vector<GraphNode*>> do_partition_shard(int idx, int shard_num, std::vector<uint64_t>& shard_size);
+  int do_partition_shard(int src_idx, 
+                         int dst_idx,
+                         int shard_num, 
+                         std::vector<uint64_t>& shard_size, 
+                         std::vector<std::vector<std::vector<GraphNode*>>>& node_ptrs,
+                         std::vector<std::vector<std::vector<FeatureNode*>>>& feature_ptrs);
+
   std::string get_inverse_etype(std::string &etype);
 
   int32_t load_edges(const std::string &path,
                      bool reverse,
-                     const std::string &edge_type);
+                     const std::string &edge_type,
+                     int load_mode = 0);
 
   int get_all_id(int type,
                  int slice_num,
@@ -571,14 +593,19 @@ class GraphTable : public Table {
   int get_node_embedding_ids(int slice_num,
                              std::vector<std::vector<uint64_t>> *output);
   int32_t load_nodes(const std::string &path,
-                     std::string node_type = std::string());
+                     std::string node_type = std::string(),
+                     int load_mode = -1);
   std::pair<uint64_t, uint64_t> parse_edge_file(const std::string &path,
                                                 int idx,
-                                                bool reverse);
+                                                bool reverse,
+                                                bool load_for_partition = false);
+  std::pair<uint64_t, uint64_t> parse_shard_edge_file(const std::string &path,
+                                                      int idx);
   std::pair<uint64_t, uint64_t> parse_node_file(const std::string &path,
                                                 const std::string &node_type,
                                                 int idx);
   std::pair<uint64_t, uint64_t> parse_node_file(const std::string &path);
+  std::pair<uint64_t, uint64_t> parse_shard_node_file(const std::string &path, int idx);
   int32_t add_graph_node(int idx,
                          std::vector<uint64_t> &id_list,
                          std::vector<bool> &is_weight_list);
@@ -618,6 +645,10 @@ class GraphTable : public Table {
                             const char *feat_str,
                             size_t len,
                             FeatureNode *node);
+  virtual int parse_shard_feature(int idx,
+                                  const std::string& name,
+                                  uint64_t value,
+                                  FeatureNode *node);
 
   virtual int32_t get_node_feat(int idx,
                                 const std::vector<uint64_t> &node_ids,
@@ -732,6 +763,8 @@ class GraphTable : public Table {
   // REGISTER_GRAPH_FRIEND_CLASS(2, CompleteGraphSampler, BasicBfsGraphSampler)
 #endif
   std::string feature_separator_ = std::string(" ");
+
+  std::vector<std::vector<std::string>> shard_vertex_info;
 };
 
 /*

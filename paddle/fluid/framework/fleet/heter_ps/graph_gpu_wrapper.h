@@ -54,6 +54,14 @@ class GraphGpuWrapper {
                           std::string npath,
                           int part_num,
                           bool reverse);
+  void load_shard_graph(std::string etype,
+                        std::string ntype,
+                        std::string spath,
+                        int part_num,
+                        int shard_id);
+  void partition_shard(int shard_num,
+                       std::string part_path);
+  void clear_shard_graph(int etype_num, int gpu_num);
   int32_t load_next_partition(int idx);
   int32_t get_partition_num(int idx);
   void load_node_weight(int type_id, int idx, std::string path);

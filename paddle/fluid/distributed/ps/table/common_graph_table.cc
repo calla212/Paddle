@@ -1146,6 +1146,365 @@ int32_t GraphTable::load_node_and_edge_file(std::string etype,
   return 0;
 }
 
+int GraphTable::load_shard_info(const std::string& spath, int ntype_size) {
+  std::ifstream fin(spath + "ginfo");
+  std::string v_name, feature_name;
+  shard_vertex_info.resize(ntype_size);
+  while (fin >> v_name) {
+    int feature_num = 0;
+    fin >> feature_num;
+    if (feature_to_id.find(v_name) == feature_to_id.end()) {
+      VLOG(0) << "Cannot find " << v_name << ".";
+      return -1;
+    }
+    int idx = feature_to_id[v_name];
+    while (feature_num--) {
+      fin >> feature_name;
+      shard_vertex_info[idx].push_back(feature_name);
+    }
+  }
+  fin.close();
+  return 0;
+}
+
+int32_t GraphTable::load_shard_graph_file(std::string etype,
+                                          std::string ntype,
+                                          std::string spath,
+                                          int part_num,
+                                          int shard_id) {
+  auto etypes = paddle::string::split_string<std::string>(etype, ",");
+  auto ntypes = paddle::string::split_string<std::string>(ntype, ",");
+  if (shard_vertex_info.empty()) {
+    load_shard_info(spath, ntypes.size());
+  }
+  VLOG(0) << "etypes size: " << etypes.size();
+  VLOG(0) << "ntypes size: " << ntypes.size();
+  VLOG(0) << "shard_vertex size: " << shard_vertex_info.size();
+  VLOG(0) << "shard id: " << shard_id;
+  
+  std::string delim = ";";
+  size_t total_len = etypes.size() * 2 + shard_vertex_info.size();  // 1 is for node
+  spath += "shard_" + std::to_string(shard_id) + "/";
+
+  std::vector<std::future<int>> tasks;
+  for (size_t i = 0; i < total_len; i++) {
+    tasks.push_back(
+      _shards_task_pool[i % task_pool_size_]->enqueue([&, i, this]() -> int {
+        if (i < etypes.size() * 2) {
+          std::string cur_etype;
+          if (i < etypes.size()) cur_etype = etypes[i];
+          else cur_etype = get_inverse_etype(etypes[i - etypes.size()]);
+          auto etype_path = spath + cur_etype;
+          VLOG(0) << etype_path;
+          auto etype_path_list = paddle::framework::localfs_list(etype_path);
+          std::string etype_path_str;
+          // if (part_num > 0 && part_num < (int)etype_path_list.size()) {
+          //   std::vector<std::string> sub_etype_path_list(
+          //       etype_path_list.begin(), etype_path_list.begin() + part_num);
+          //   etype_path_str =
+          //       paddle::string::join_strings(sub_etype_path_list, delim);
+          // } else {
+          etype_path_str =
+            paddle::string::join_strings(etype_path_list, delim);
+          // }
+          this->load_edges(etype_path_str, false, cur_etype, 1);
+        } else {
+          int idx = i - etypes.size();
+          auto npath = spath + "node_" + ntypes[i - etypes.size() * 2];
+          auto npath_list = paddle::framework::localfs_list(npath);
+          std::string npath_str = paddle::string::join_strings(npath_list, delim);
+
+          if (ntypes.size() == 0) {
+            VLOG(0) << "node_type not specified, nothing will be loaded ";
+            return 0;
+          }
+
+          if (FLAGS_graph_load_in_parallel) {
+            this->load_nodes(npath_str, "", i - etypes.size() * 2);
+          } else {
+            for (size_t j = 0; j < ntypes.size(); j++) {
+              this->load_nodes(npath_str, ntypes[j], i - etypes.size() * 2);
+            }
+          }
+        }
+        return 0;
+    }));
+  }
+  for (int i = 0; i < (int)tasks.size(); i++) tasks[i].get();
+  return 0;
+}
+
+uint64_t node_cost(GraphNode* node) {
+  assert(node != nullptr);
+  uint64_t ret = 0;
+  // node->unique_edge();
+  ret = node->get_neighbor_size();
+  return ret;
+}
+
+int GraphTable::do_partition_shard(int src_idx, 
+                                   int dst_idx,
+                                   int shard_graph_num, 
+                                   std::vector<uint64_t>& shard_size, 
+                                   std::vector<std::vector<std::vector<GraphNode*>>>& node_ptrs,
+                                   std::vector<std::vector<std::vector<FeatureNode*>>>& feature_ptrs) {
+  std::priority_queue<std::pair<uint64_t, int>, std::vector<std::pair<uint64_t, int>>, std::greater<std::pair<uint64_t, int>>> pri_q;
+  for (int i = 0; i < shard_graph_num; ++i) {
+    pri_q.push(std::make_pair(shard_size[i], i));
+  }
+
+  for (auto edge_shard : edge_shards[src_idx]) {
+    auto& shards = edge_shard->get_bucket();
+    for (auto node : shards) {
+      auto shard_info = pri_q.top();
+      pri_q.pop();
+      shard_info.first += node_cost(dynamic_cast<GraphNode*>(node));
+      pri_q.push(shard_info);
+      node_ptrs[shard_info.second][src_idx].push_back(dynamic_cast<GraphNode*>(node));
+
+      auto feature = dynamic_cast<FeatureNode*>(find_node(1, src_idx, node->get_id()));
+      feature_ptrs[shard_info.second][src_idx].push_back(feature);
+      for (size_t i = 0; i < node->get_neighbor_size(); ++i) {
+        auto vid = node->get_neighbor_id(i);
+        auto vfeature = dynamic_cast<FeatureNode*>(find_node(1, dst_idx, vid));
+        feature_ptrs[shard_info.second][dst_idx].push_back(vfeature);
+      }
+    }
+  }
+
+  while(!pri_q.empty()) {
+    auto shard_info = pri_q.top();
+    pri_q.pop();
+    shard_size[shard_info.second] = shard_info.first;
+  }
+  VLOG(0) << "Partitioning Algorithm Completed.";
+  return 0;
+}
+
+std::string get_shard_file_path(const std::string& part_path, int shard_id, const std::string& graph_name, int part_id) {
+  std::string pstr = std::to_string(part_id);
+  for (int i = pstr.size(); i < 5; ++i) pstr = "0" + pstr;
+  auto ret = part_path + "shard_" + std::to_string(shard_id) + + "/" + graph_name + "/part-" + pstr;
+  return ret;
+}
+
+int32_t GraphTable::partition_shard_file(int shard_graph_num, const std::string& part_path) {
+  assert(edge_shards.size() == 1);
+  VLOG(0) << "calling partition_shard_file";
+
+  std::vector<std::future<int64_t>> tasks;
+
+  std::vector<uint64_t> shard_size;
+  std::vector<std::vector<std::vector<GraphNode*>>> node_ptrs;
+  std::vector<std::vector<std::vector<FeatureNode*>>> feature_ptrs;
+
+  shard_size.resize(shard_graph_num);
+  feature_ptrs.resize(shard_graph_num);
+  node_ptrs.resize(shard_graph_num);
+  feature_ptrs.resize(shard_graph_num);
+  for (int i = 0; i < shard_graph_num; ++i) {
+    node_ptrs[i].resize(id_to_edge.size());
+    feature_ptrs[i].resize(id_to_feature.size());
+  }
+
+  for (int idx = 0; idx < id_to_edge.size(); ++idx) {
+    auto node_type = paddle::string::split_string<std::string>(id_to_edge[idx], "2");
+    auto utype = node_type[0];
+    auto vtype = node_type[1];
+
+    assert(feature_to_id.find(utype) != feature_to_id.end());
+    assert(feature_to_id.find(vtype) != feature_to_id.end());
+
+    int utype_id = feature_to_id[utype];
+    int vtype_id = feature_to_id[vtype];
+
+    do_partition_shard(utype_id, vtype_id, shard_graph_num, shard_size, node_ptrs, feature_ptrs);
+  }
+
+  for (int i = 0; i < shard_size.size(); ++i)
+    VLOG(0) << "shard_size " << i << " : " << shard_size[i] << std::endl;
+
+  for (int shard_id = 0; shard_id < shard_graph_num * (id_to_edge.size() + id_to_feature.size()); ++shard_id) {
+    tasks.push_back(_shards_task_pool[shard_id % task_pool_size_]->enqueue(
+      [=]() mutable -> int64_t {
+        std::ofstream fout;
+
+        if (shard_id < shard_graph_num * id_to_edge.size()) {
+          auto idx = shard_id % id_to_edge.size();
+          shard_id /= id_to_edge.size();
+          const uint64_t SHARD_SIZE = 75000;
+          uint64_t part_size = shard_size[shard_id] / ((uint64_t)(shard_size[shard_id] / SHARD_SIZE) + 1) + 1;
+          uint64_t part_cnt = 0;
+          
+          int part_id = 0;
+          uint64_t op_sum = 0;
+          auto shard_file_path = get_shard_file_path(part_path, shard_id, id_to_edge[idx], part_id++);
+          fout.open(shard_file_path, std::ios::binary);
+          if (!fout.is_open()) {
+            VLOG(0) << "open output file " << shard_file_path << " failed!";
+          }
+
+          for (auto node : node_ptrs[shard_id][idx]) {
+            auto u = node->get_id();
+            for (size_t k = 0; k < node->get_neighbor_size(); ++k) {
+              auto v = node->get_neighbor_id(k);
+              float w = node->get_neighbor_weight(k);
+              fout.write((char*)(&u), sizeof(uint64_t));
+              fout.write((char*)(&v), sizeof(uint64_t));
+              fout.write((char*)(&w), sizeof(float)); // TODO : Optimize the Weight
+              ++op_sum;
+            }
+
+            part_cnt += node->get_neighbor_size();
+            if (part_cnt >= part_size) {
+              part_cnt = 0;
+              fout.close();
+              fout.open(get_shard_file_path(part_path, shard_id, id_to_edge[idx], part_id++), std::ios::binary);
+            }
+
+          }
+
+          VLOG(0) << "edge_shard_" << shard_id << "[" << id_to_edge[idx] << "] : part_num = " << part_id << ", part_size = " << part_size << ", op_sum = " << op_sum;
+        }
+        else {
+          const uint64_t SHARD_SIZE = 750000;
+          shard_id -= id_to_edge.size() * shard_graph_num;
+          int utype_id = shard_id % id_to_feature.size();
+          shard_id /= id_to_feature.size();
+          auto& shard_node = feature_ptrs[shard_id][utype_id];
+          const auto& utype = id_to_feature[utype_id];
+
+          // shard_node.insert(shard_node.end(), dst_nodes[shard_id - shard_graph_num].begin(), dst_nodes[shard_id - shard_graph_num].end());
+          std::sort(shard_node.begin(), shard_node.end());
+          shard_node.erase(std::unique(shard_node.begin(), shard_node.end()), shard_node.end());
+
+          uint64_t part_size = shard_node.size() / ((uint64_t)(shard_node.size() / SHARD_SIZE) + 1) + 1;
+          uint64_t part_cnt = 0;
+          
+          int part_id = 0;
+          uint64_t op_sum = 0;
+          auto shard_file_path = get_shard_file_path(part_path, shard_id, "node_" + utype, part_id++);
+          fout.open(shard_file_path, std::ios::binary);
+          if (!fout.is_open()) {
+            VLOG(0) << "open output file " << shard_file_path << " failed!";
+          }
+
+          for (auto node : shard_node) {
+            auto uid = node->get_id();
+            
+            std::vector<uint64_t> feature_ids;
+            node->get_feature_ids(&feature_ids);
+
+            fout.write((char*)(&uid), sizeof(uint64_t));
+            for (auto feature_id : feature_ids) 
+              fout.write((char*)(&feature_id), sizeof(uint64_t));
+            ++op_sum;
+
+            if (++part_cnt >= part_size) {
+              part_cnt = 0;
+              fout.close();
+              fout.open(get_shard_file_path(part_path, shard_id, "node_" + utype, part_id++), std::ios::binary);
+            }
+          }
+
+          VLOG(0) << "vertex_shard_" << shard_id << "[" << utype << "] : part_num = " << part_id << ", part_size = " << part_size << ", op_sum = " << op_sum;
+        
+          // else {
+          //   if (utype != vtype) {
+          //     auto shard_id = _shard_id - (shard_graph_num << 1);
+          //     auto& shard_node = dst_nodes[shard_id];
+
+          //     std::sort(shard_node.begin(), shard_node.end());
+          //     shard_node.erase(std::unique(shard_node.begin(), shard_node.end()), shard_node.end());
+
+          //     uint64_t part_size = shard_node.size() / ((uint64_t)(shard_node.size() / SHARD_SIZE) + 1) + 1;
+          //     uint64_t part_cnt = 0;              
+          //     int part_id = 0;
+          //     uint64_t op_sum = 0;
+          //     auto shard_file_path = get_shard_file_path(part_path, shard_id, "node_" + vtype, part_id++);
+          //     fout.open(shard_file_path, std::ios::binary);
+          //     if (!fout.is_open()) {
+          //       VLOG(0) << "open output file " << shard_file_path << " failed!";
+          //     }
+
+          //     for (auto feature : shard_node) {
+          //       auto vid = feature->get_id();
+          //       std::vector<uint64_t> feature_ids;
+          //       feature->get_feature_ids(&feature_ids);
+
+          //       fout.write((char*)(&vid), sizeof(uint64_t));
+          //       for (auto feature_id : feature_ids) 
+          //         fout.write((char*)(&feature_id), sizeof(uint64_t));
+          //       ++op_sum;
+
+          //       if (++part_cnt >= part_size) {
+          //         part_cnt = 0;
+          //         fout.close();
+          //         fout.open(get_shard_file_path(part_path, shard_id, "node_" + vtype, part_id++), std::ios::binary);
+          //       }
+          //     }
+          //     VLOG(0) << "vertex_shard_" << shard_id << "[" << vtype << "] : part_num = " << part_id << ", part_size = " << part_size << ", op_sum = " << op_sum;
+          //   }
+          // }
+        }
+        return 0;
+      }));
+  }
+  
+  for (size_t i = 0; i < tasks.size(); i++) tasks[i].get();
+
+  std::ofstream fout(part_path + "ginfo");
+  for (auto node_info : feature_to_id) {
+    fout << node_info.first;
+    auto type_id = node_info.second;
+    for (auto shard : feature_shards[type_id]) {
+      auto tmp_bucket = shard->get_bucket();
+      if (!tmp_bucket.empty()) {
+        auto tmp_node = tmp_bucket[0];
+        std::vector<uint64_t> feature_ids;
+        std::vector<std::string> valid_feature_name;
+        
+        for (int i = 0; i < tmp_node->get_feature_size(); ++i) {
+          feature_ids.clear();
+          tmp_node->get_feature_ids(i, &feature_ids);
+          if (!feature_ids.empty()) {
+            for (auto it : feat_id_map[type_id]) {
+              if (it.second == i) {
+                valid_feature_name.push_back(it.first);
+                break;
+              }
+            }
+          }
+        }
+
+        fout << '\t' << valid_feature_name.size();
+        for (auto vfn : valid_feature_name) fout << '\t' << vfn;
+        break;
+      }
+    }
+    fout << std::endl;
+  }
+  fout.close();
+  return 0;
+}
+
+void GraphTable::clear_shard_graph_table(void) {
+  for (int i = 0; i < (int)edge_shards.size(); i++) {
+    for (auto p : edge_shards[i]) {
+      delete p;
+    }
+    edge_shards[i].clear();
+  }
+
+  for (int i = 0; i < (int)feature_shards.size(); i++) {
+    for (auto p : feature_shards[i]) {
+      delete p;
+    }
+    feature_shards[i].clear();
+  }
+  VLOG(0) << "clear shard graph table";
+}
+
 int32_t GraphTable::get_nodes_ids_by_ranges(
     int type_id,
     int idx,
@@ -1265,7 +1624,7 @@ std::pair<uint64_t, uint64_t> GraphTable::parse_node_file(
     std::string parse_node_type = vals[0].to_string();
     auto it = feature_to_id.find(parse_node_type);
     if (it == feature_to_id.end()) {
-      VLOG(0) << parse_node_type << "type error, please check";
+      // VLOG(0) << parse_node_type << "type error, please check";
       continue;
     }
     idx = it->second;
@@ -1293,20 +1652,75 @@ std::pair<uint64_t, uint64_t> GraphTable::parse_node_file(
   return {local_count, local_valid_count};
 }
 
+std::pair<uint64_t, uint64_t> GraphTable::parse_shard_node_file(
+    const std::string &path, int idx) {
+  std::ifstream file(path, std::ios::in | std::ios::binary | std::ios::ate);
+  uint64_t local_count = 0;
+  uint64_t local_valid_count = 0;
+
+  std::vector<paddle::string::str_ptr> vals;
+  auto& feature_list = shard_vertex_info[idx];
+
+  if (!file.is_open()) {
+    VLOG(0) << "Open " << path << " Failed.";
+    return {0, 0};
+  }
+
+  std::streamsize size = file.tellg();
+  file.seekg(0, std::ios::beg);
+  std::vector<char> buffer(size);
+  file.read(buffer.data(), size);
+  file.close();
+
+  const int feature_cnt = feature_list.size();
+  const int line_size = sizeof(uint64_t) * (feature_cnt + 1);
+
+  for (size_t offset = 0; offset < size; offset += line_size) {
+    uint64_t *v_ptr = (uint64_t*)(buffer.data() + offset);
+    uint64_t v_id = *v_ptr;
+    
+    size_t shard_id = v_id % shard_num;
+    if (shard_id >= shard_end || shard_id < shard_start) {
+      VLOG(4) << "will not load " << v_id << " from " << path
+              << ", please check id distribution";
+      continue;
+    }
+    local_count++;
+
+    size_t index = shard_id - shard_start;
+    auto node = feature_shards[idx][index]->add_feature_node(v_id, false);
+    if (node != NULL) {
+      for (int feature_id = 0; feature_id < feature_cnt; ++feature_id) {
+        uint64_t *feature_ptr = (uint64_t*)(buffer.data() + offset + feature_id * sizeof(uint64_t) + sizeof(uint64_t));
+        uint64_t feature_value = *feature_ptr;
+        parse_shard_feature(idx, feature_list[feature_id], feature_value, node);
+      }
+    }
+    local_valid_count++;
+  }
+  VLOG(2) << local_valid_count << "/" << local_count << " nodes from filepath->"
+          << path;
+  return {local_count, local_valid_count};
+}
+
 // TODO opt load all node_types in once reading
-int32_t GraphTable::load_nodes(const std::string &path, std::string node_type) {
+int32_t GraphTable::load_nodes(const std::string &path, std::string node_type, int load_idx) {
   auto paths = paddle::string::split_string<std::string>(path, ";");
   uint64_t count = 0;
   uint64_t valid_count = 0;
   int idx = 0;
   if (FLAGS_graph_load_in_parallel) {
-    if (node_type == "") {
+    if (load_idx < 0 && node_type == "") {
       VLOG(0) << "Begin GraphTable::load_nodes(), will load all node_type once";
+    }
+    if (load_idx >= 0) {
+      VLOG(0) << "Begin GraphTable::load_nodes(), will load " << id_to_feature[load_idx];
     }
     std::vector<std::future<std::pair<uint64_t, uint64_t>>> tasks;
     for (size_t i = 0; i < paths.size(); i++) {
       tasks.push_back(load_node_edge_task_pool->enqueue(
           [&, i, this]() -> std::pair<uint64_t, uint64_t> {
+            if (load_idx >= 0) return parse_shard_node_file(paths[i], load_idx);
             return parse_node_file(paths[i]);
           }));
     }
@@ -1330,14 +1744,21 @@ int32_t GraphTable::load_nodes(const std::string &path, std::string node_type) {
     }
     for (auto path : paths) {
       VLOG(2) << "Begin GraphTable::load_nodes(), path[" << path << "]";
-      auto res = parse_node_file(path, node_type, idx);
+      std::pair<uint64_t, uint64_t> res;
+      if (load_idx >= 0) {
+        VLOG(0) << "The sky is blue.";
+        // res = parse_shard_node_file(path, node_type, idx);
+      }
+      else res = parse_node_file(path, node_type, idx);
       count += res.first;
       valid_count += res.second;
     }
   }
 
-  VLOG(0) << valid_count << "/" << count << " nodes in node_type[ " << node_type
-          << "] are loaded successfully!";
+  if (load_idx >= 0)
+    VLOG(0) << valid_count << "/" << count << " nodes in node_type[" << id_to_feature[load_idx] << "] are loaded successfully!";
+  else
+    VLOG(0) << valid_count << "/" << count << " nodes in node_type[" << node_type << "] are loaded successfully!";
   return 0;
 }
 
@@ -1352,7 +1773,7 @@ int32_t GraphTable::build_sampler(int idx, std::string sample_type) {
 }
 
 std::pair<uint64_t, uint64_t> GraphTable::parse_edge_file(
-    const std::string &path, int idx, bool reverse) {
+    const std::string &path, int idx, bool reverse, bool load_for_partition) {
   std::string sample_type = "random";
   bool is_weighted = false;
   std::ifstream file(path);
@@ -1377,7 +1798,7 @@ std::pair<uint64_t, uint64_t> GraphTable::parse_edge_file(
       std::swap(src_id, dst_id);
     }
     size_t src_shard_id = src_id % shard_num;
-    if (FLAGS_graph_load_in_parallel) {
+    if (FLAGS_graph_load_in_parallel && !load_for_partition) {
       if (src_shard_id != (part_num % shard_num)) {
         continue;
       }
@@ -1409,9 +1830,66 @@ std::pair<uint64_t, uint64_t> GraphTable::parse_edge_file(
   return {local_count, local_valid_count};
 }
 
+std::pair<uint64_t, uint64_t> GraphTable::parse_shard_edge_file(
+    const std::string &path, int idx) {
+  std::string sample_type = "random";
+  bool is_weighted = false;
+  std::ifstream file(path, std::ios::in | std::ios::binary | std::ios::ate);
+  uint64_t local_count = 0;
+  uint64_t local_valid_count = 0;
+
+  if (!file.is_open()) {
+    VLOG(0) << "Open " << path << " Failed.";
+    return {0, 0};
+  }
+
+  std::streamsize size = file.tellg();
+  file.seekg(0, std::ios::beg);
+  std::vector<char> buffer(size);
+  file.read(buffer.data(), size);
+  file.close();
+
+  for (size_t offset = 0; offset < size; offset += 20) {
+    uint64_t *src_ptr = (uint64_t*)(buffer.data() + offset);
+    uint64_t *dst_ptr = (uint64_t*)(buffer.data() + offset + 8);
+    float *weight_ptr = (float*)(buffer.data() + offset + 16);
+
+    uint64_t src_id = *src_ptr;
+    uint64_t dst_id = *dst_ptr;
+    float weight = *weight_ptr;
+
+    local_count++;
+    
+    size_t src_shard_id = src_id % shard_num;
+
+    if (weight >= 0) { // TODO : Update for weighted graph in info file
+      sample_type = "weighted";
+      is_weighted = true;
+    }
+
+    if (src_shard_id >= shard_end || src_shard_id < shard_start) {
+      VLOG(0) << "will not load " << src_id << " from " << path
+              << ", please check id distribution";
+      continue;
+    }
+    size_t index = src_shard_id - shard_start;
+    auto node = edge_shards[idx][index]->add_graph_node(src_id);
+    if (node != NULL) {
+      node->build_edges(is_weighted);
+      node->add_edge(dst_id, weight);
+    }
+
+    local_valid_count++;
+  }
+
+  VLOG(2) << local_count << " edges are loaded from filepath->" << path;
+  return {local_count, local_valid_count};
+}
+
 int32_t GraphTable::load_edges(const std::string &path,
                                bool reverse_edge,
-                               const std::string &edge_type) {
+                               const std::string &edge_type,
+                               int load_mode) { // 0 : normal; 1 : load shard
 #ifdef PADDLE_WITH_HETERPS
   if (search_level == 2) total_memory_cost = 0;
   const uint64_t fixed_load_edges = 1000000;
@@ -1439,6 +1917,7 @@ int32_t GraphTable::load_edges(const std::string &path,
     for (int i = 0; i < paths.size(); i++) {
       tasks.push_back(load_node_edge_task_pool->enqueue(
           [&, i, idx, this]() -> std::pair<uint64_t, uint64_t> {
+            if (load_mode == 1) return parse_shard_edge_file(paths[i], idx);
             return parse_edge_file(paths[i], idx, reverse_edge);
           }));
     }
@@ -1449,7 +1928,11 @@ int32_t GraphTable::load_edges(const std::string &path,
     }
   } else {
     for (auto path : paths) {
-      auto res = parse_edge_file(path, idx, reverse_edge);
+      std::pair<uint64_t, uint64_t> res = {0, 0};
+      if (load_mode == 1) res = parse_shard_edge_file(path, idx);
+      else {
+        res = parse_edge_file(path, idx, reverse_edge);
+      }
       count += res.first;
       valid_count += res.second;
     }
@@ -1805,6 +2288,13 @@ void string_vector_2_string(
   }
 }
 
+void string_vector_2_string(
+    std::string feat_str,
+    char delim,
+    std::string *output) {
+  *output += feat_str;
+}
+
 int GraphTable::parse_feature(int idx,
                               const char *feat_str,
                               size_t len,
@@ -1855,6 +2345,50 @@ int GraphTable::parse_feature(int idx,
 
   return -1;
 }
+
+int GraphTable::parse_shard_feature(int idx,
+                                    const std::string& name,
+                                    uint64_t value,
+                                    FeatureNode *node) {
+  auto it = feat_id_map[idx].find(name);
+  if (it != feat_id_map[idx].end()) {
+    int32_t id = it->second;
+    std::string *fea_ptr = node->mutable_feature(id);
+    std::string dtype = this->feat_dtype[idx][id];
+    std::string value_str = std::to_string(value);
+    paddle::string::str_ptr feat_str(value_str.c_str(), value_str.size());
+
+    if (dtype == "feasign") {
+      FeatureNode::parse_one_value_to_bytes<uint64_t>(
+        feat_str, fea_ptr);
+      return 0;
+    } else if (dtype == "string") {
+      string_vector_2_string(value_str, ' ', fea_ptr);
+      return 0;
+    } else if (dtype == "float32") {
+      FeatureNode::parse_one_value_to_bytes<float>(
+        feat_str, fea_ptr);
+      return 0;
+    } else if (dtype == "float64") {
+      FeatureNode::parse_one_value_to_bytes<double>(
+        feat_str, fea_ptr);
+      return 0;
+    } else if (dtype == "int32") {
+      FeatureNode::parse_one_value_to_bytes<int32_t>(
+        feat_str, fea_ptr);
+      return 0;
+    } else if (dtype == "int64") {
+      FeatureNode::parse_one_value_to_bytes<uint64_t>(
+        feat_str, fea_ptr);
+      return 0;
+    }
+  } else {
+    VLOG(0) << "feature_name[" << name << "] is not in feat_id_map, ntype_id["
+            << idx << "] feat_id_map_size[" << feat_id_map.size() << "]";
+  }
+  return -1;
+}
+
 // thread safe shard vector merge
 class MergeShardVector {
  public:
