@@ -185,13 +185,13 @@ void GraphGpuWrapper::clear_shard_graph(int etype_num, int gpu_num) {
   ((GpuPsGraphTable *)graph_table)
     ->cpu_graph_table_->clear_shard_graph_table();
   
-  for (int i = 0; i < etype_num; ++i)
-    ((GpuPsGraphTable *)graph_table) -> clear_graph_info(i);
+  // for (int i = 0; i < etype_num; ++i)
+  //   ((GpuPsGraphTable *)graph_table) -> clear_graph_info(i);
   
-  for (int i = 0; i < gpu_num; ++i)
-    ((GpuPsGraphTable *)graph_table) -> clear_feature_info(i);
+  // for (int i = 0; i < gpu_num; ++i)
+  //   ((GpuPsGraphTable *)graph_table) -> clear_feature_info(i);
 
-  VLOG(0) << "Clear " << etype_num << " graphs on " << gpu_num << "GPUs.";
+  VLOG(0) << "Clear " << etype_num << " graphs on " << gpu_num << " GPUs.";
 }
 
 void GraphGpuWrapper::add_table_feat_conf(std::string table_name,

@@ -557,13 +557,12 @@ class GraphTable : public Table {
 
   void clear_shard_graph_table(void);
 
-  // std::vector<std::vector<GraphNode*>> do_partition_shard(int idx, int shard_num, std::vector<uint64_t>& shard_size);
   int do_partition_shard(int src_idx, 
                          int dst_idx,
-                         int shard_num, 
-                         std::vector<uint64_t>& shard_size, 
-                         std::vector<std::vector<std::vector<GraphNode*>>>& node_ptrs,
-                         std::vector<std::vector<std::vector<FeatureNode*>>>& feature_ptrs);
+                         int shard_graph_num, 
+                         std::vector<uint64_t>& shard_graph_size, 
+                         std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
+                         std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs);
 
   std::string get_inverse_etype(std::string &etype);
 
@@ -597,8 +596,7 @@ class GraphTable : public Table {
                      int load_mode = -1);
   std::pair<uint64_t, uint64_t> parse_edge_file(const std::string &path,
                                                 int idx,
-                                                bool reverse,
-                                                bool load_for_partition = false);
+                                                bool reverse);
   std::pair<uint64_t, uint64_t> parse_shard_edge_file(const std::string &path,
                                                       int idx);
   std::pair<uint64_t, uint64_t> parse_node_file(const std::string &path,

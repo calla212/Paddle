@@ -370,6 +370,7 @@ __global__ void node_query_example(GpuPsCommGraph graph,
 void GpuPsGraphTable::clear_feature_info(int gpu_id) {
   int idx = 0;
   if (idx >= feature_table_num_) return;
+  VLOG(0) << "clear_feature_info on GPU" << gpu_id;
   int offset = get_table_offset(gpu_id, GraphTableType::FEATURE_TABLE, idx);
   if (offset < tables_.size()) {
     delete tables_[offset];
@@ -394,6 +395,7 @@ void GpuPsGraphTable::clear_feature_info(int gpu_id) {
 
 void GpuPsGraphTable::clear_graph_info(int gpu_id, int idx) {
   if (idx >= graph_table_num_) return;
+  VLOG(0) << "clear_graph_info << " << idx << " on GPU" << gpu_id;
   int offset = get_table_offset(gpu_id, GraphTableType::EDGE_TABLE, idx);
   if (offset < tables_.size()) {
     delete tables_[offset];
@@ -774,8 +776,10 @@ NeighborSampleResult GpuPsGraphTable::graph_neighbor_sample_v2(
   int h_right[total_gpu];  // NOLINT
 
   auto d_left = memory::Alloc(place, total_gpu * sizeof(int));
+  // VLOG(0) << "      " << total_gpu;
   auto d_right = memory::Alloc(place, total_gpu * sizeof(int));
   int* d_left_ptr = reinterpret_cast<int*>(d_left->ptr());
+  // VLOG(0) << "   ptr : " << (uint64_t)(d_left_ptr);
   int* d_right_ptr = reinterpret_cast<int*>(d_right->ptr());
   int default_value = 0;
   if (cpu_query_switch) {
@@ -796,6 +800,8 @@ NeighborSampleResult GpuPsGraphTable::graph_neighbor_sample_v2(
   auto d_shard_actual_sample_size = memory::Alloc(place, len * sizeof(int));
   int* d_shard_actual_sample_size_ptr =
       reinterpret_cast<int*>(d_shard_actual_sample_size->ptr());
+  
+  CUDA_CHECK(cudaDeviceSynchronize());
 
   split_input_to_shard(
       (uint64_t*)(key), d_idx_ptr, len, d_left_ptr, d_right_ptr, gpu_id);
