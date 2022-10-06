@@ -557,7 +557,8 @@ class GraphTable : public Table {
 
   void clear_shard_graph_table(void);
 
-  int do_partition_shard(int src_idx, 
+  int do_partition_shard(int idx,
+                         int src_idx, 
                          int dst_idx,
                          int shard_graph_num, 
                          std::vector<uint64_t>& shard_graph_size, 
