@@ -555,6 +555,8 @@ class GraphTable : public Table {
 
   int32_t partition_shard_file(int shard_num, const std::string& part_path);
 
+  int32_t build_inv_shard_graph(int idx);
+
   void clear_shard_graph_table(void);
 
   int do_partition_shard(int idx,

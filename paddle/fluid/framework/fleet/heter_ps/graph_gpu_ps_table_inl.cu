@@ -395,7 +395,6 @@ void GpuPsGraphTable::clear_feature_info(int gpu_id) {
 
 void GpuPsGraphTable::clear_graph_info(int gpu_id, int idx) {
   if (idx >= graph_table_num_) return;
-  VLOG(0) << "clear_graph_info << " << idx << " on GPU" << gpu_id;
   int offset = get_table_offset(gpu_id, GraphTableType::EDGE_TABLE, idx);
   if (offset < tables_.size()) {
     delete tables_[offset];

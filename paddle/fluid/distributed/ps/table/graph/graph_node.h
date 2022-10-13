@@ -82,7 +82,11 @@ class GraphNode : public Node {
   }
   virtual uint64_t get_neighbor_id(int idx) { return edges->get_id(idx); }
   virtual float get_neighbor_weight(int idx) { return edges->get_weight(idx); }
-  virtual size_t get_neighbor_size() { return edges->size(); }
+  virtual size_t get_neighbor_size() { 
+    if (edges != nullptr)
+      return edges->size();
+    return 0;
+  }
   // void unique_edge() {edges->set_unique();}
 
  protected:
