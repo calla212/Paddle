@@ -1460,12 +1460,11 @@ int32_t GraphTable::partition_shard_file(int shard_graph_num, const std::string&
           shard_id -= feature_ptrs.size() * shard_graph_num;
           std::ofstream fout;
           int idx = shard_id / shard_graph_num;
-          idx <<= 1;
           shard_id %= shard_graph_num;
           uint64_t v_sum = 0, e_sum = 0;
           
           for (int part_id = 0; part_id < shard_num; ++part_id) {
-            auto shard_file_path = get_shard_file_path(part_path, shard_id, id_to_edge[idx], part_id);
+            auto shard_file_path = get_shard_file_path(part_path, shard_id, id_to_edge[idx << 1], part_id);
             fout.open(shard_file_path, std::ios::binary);
             if (!fout.is_open()) {
               VLOG(0) << "open output file " << shard_file_path << " failed!";
@@ -1487,7 +1486,7 @@ int32_t GraphTable::partition_shard_file(int shard_graph_num, const std::string&
             }
             fout.close();
           }
-          VLOG(0) << "shard_" << shard_id << " " << id_to_edge[idx] << " sum_vertex = " << v_sum << ", sum_edge = " << e_sum;
+          VLOG(0) << "shard_" << shard_id << " " << id_to_edge[idx << 1] << " sum_vertex = " << v_sum << ", sum_edge = " << e_sum;
         }
         return 0;
       }));
