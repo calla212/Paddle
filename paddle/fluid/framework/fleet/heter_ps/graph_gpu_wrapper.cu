@@ -176,9 +176,10 @@ void GraphGpuWrapper::load_shard_graph(std::string etype,
           etype, ntype, spath, part_num, shard_id);
 }
 
-void GraphGpuWrapper::partition_shard(int shard_num, std::string part_path) {
+void GraphGpuWrapper::partition_shard(int shard_num, std::string part_path, std::string part_method) {
+  if (part_method == "") part_method = "normal";
   ((GpuPsGraphTable *)graph_table)
-      ->cpu_graph_table_->partition_shard_file(shard_num, part_path);
+      ->cpu_graph_table_->partition_shard_file(shard_num, part_path, part_method);
 }
 
 void GraphGpuWrapper::clear_shard_graph(int etype_num, int gpu_num) {

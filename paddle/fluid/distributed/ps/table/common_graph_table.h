@@ -38,6 +38,7 @@
 #include <unordered_set>
 #include <utility>
 #include <vector>
+#include <metis.h>
 
 #include "paddle/fluid/distributed/ps/table/accessor.h"
 #include "paddle/fluid/distributed/ps/table/common_table.h"
@@ -553,19 +554,28 @@ class GraphTable : public Table {
                                 int part_num,
                                 int shard_id);
 
-  int32_t partition_shard_file(int shard_num, const std::string& part_path);
+  int32_t partition_shard_file(int shard_num, const std::string& part_path, std::string part_method);
 
   int32_t build_inv_shard_graph(int idx);
 
   void clear_shard_graph_table(void);
 
-  int do_partition_shard(int idx,
-                         int src_idx, 
-                         int dst_idx,
-                         int shard_graph_num, 
-                         std::vector<uint64_t>& shard_graph_size, 
+  int do_partition_shard(int shard_graph_num,
                          std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
-                         std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs);
+                         std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs,
+                         std::string part_method);
+
+  int normal_partition_shard(int shard_graph_num, 
+                             std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
+                             std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs);
+  
+  int metis_partition_shard(int shard_graph_num,
+                            std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
+                            std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs);
+
+  int quick_partition_shard(int shard_graph_num,
+                            std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
+                            std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs);
 
   std::string get_inverse_etype(std::string &etype);
 

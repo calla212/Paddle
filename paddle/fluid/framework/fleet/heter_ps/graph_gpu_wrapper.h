@@ -60,7 +60,8 @@ class GraphGpuWrapper {
                         int part_num,
                         int shard_id);
   void partition_shard(int shard_num,
-                       std::string part_path);
+                       std::string part_path,
+                       std::string part_method);
   void clear_shard_graph(int etype_num, int gpu_num);
   int32_t load_next_partition(int idx);
   int32_t get_partition_num(int idx);
