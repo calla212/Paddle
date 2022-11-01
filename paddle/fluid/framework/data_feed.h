@@ -917,11 +917,10 @@ class GraphDataGenerator {
   }
   std::vector<std::shared_ptr<phi::Allocation>> SampleNeighbors(
       int64_t* uniq_nodes, int len, int sample_size,
-      std::vector<int64_t>& edges_split_num, int64_t* neighbor_len);
+      std::vector<int>& edges_split_num, int64_t* neighbor_len);
 
   std::shared_ptr<phi::Allocation> GetReindexResult(
-      int64_t* reindex_src_data, int64_t* reindex_dst_data,
-      const int* count, const int64_t* center_nodes,
+      int64_t* reindex_src_data, const int64_t* center_nodes,
       int* final_nodes_len, int node_len, int64_t neighbor_len);
 
   std::shared_ptr<phi::Allocation> GenerateSampleGraph(
@@ -959,6 +958,9 @@ class GraphDataGenerator {
   std::shared_ptr<phi::Allocation> d_feature_;
   std::shared_ptr<phi::Allocation> d_len_per_row_;
   std::shared_ptr<phi::Allocation> d_random_row_;
+  std::shared_ptr<phi::Allocation> d_slot_feature_num_map_;
+  std::shared_ptr<phi::Allocation> d_actual_slot_id_map_;
+  std::shared_ptr<phi::Allocation> d_fea_offset_map_;
   //
   std::vector<std::shared_ptr<phi::Allocation>> d_sampleidx2rows_;
   int cur_sampleidx2row_;
@@ -978,6 +980,7 @@ class GraphDataGenerator {
   std::shared_ptr<phi::Allocation> d_reindex_table_key_;
   std::shared_ptr<phi::Allocation> d_reindex_table_value_;
   std::shared_ptr<phi::Allocation> d_reindex_table_index_;
+  std::vector<std::shared_ptr<phi::Allocation>> edge_type_graph_;
   int64_t reindex_table_size_;
   int ins_buf_pair_len_;
   // size of a d_walk buf
@@ -987,6 +990,8 @@ class GraphDataGenerator {
   BufState buf_state_;
   int batch_size_;
   int slot_num_;
+  std::vector<int> h_slot_feature_num_map_;
+  int fea_num_per_node_;
   int shuffle_seed_;
   int debug_mode_;
   std::vector<int> first_node_type_;

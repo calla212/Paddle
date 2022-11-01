@@ -539,12 +539,34 @@ class GraphTable : public Table {
   virtual int32_t Initialize(const GraphParameter &config);
   int32_t Load(const std::string &path, const std::string &param);
 
-  int32_t load_node_and_edge_file(std::string etype,
-                                  std::string ntype,
-                                  std::string epath,
-                                  std::string npath,
+  int32_t load_node_and_edge_file(std::string etype2files,
+                                  std::string ntype2files,
+                                  std::string graph_data_local_path,
                                   int part_num,
-                                  bool reverse);
+                                int shard_id);
+
+  int32_t partition_shard_file(int shard_num, const std::string& part_path, std::string part_method);
+
+  int32_t build_inv_shard_graph(int idx);
+
+  void clear_shard_graph_table(void);
+
+  int do_partition_shard(int shard_graph_num,
+                         std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
+                         std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs,
+                         std::string part_method);
+
+  int normal_partition_shard(int shard_graph_num, 
+                             std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
+                             std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs);
+  
+  int metis_partition_shard(int shard_graph_num,
+                            std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
+                            std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs);
+
+  int quick_partition_shard(int shard_graph_num,
+                            std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
+                            std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs);
 
   int load_shard_info(const std::string& spath, int ntype_size);
   
@@ -578,6 +600,11 @@ class GraphTable : public Table {
                             std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs);
 
   std::string get_inverse_etype(std::string &etype);
+  
+  int32_t parse_type_to_typepath(std::string &type2files,
+                                 std::string graph_data_local_path,
+                                 std::vector<std::string> &res_type,
+                                 std::unordered_map<std::string, std::string> &res_type2path);
 
   int32_t load_edges(const std::string &path,
                      bool reverse,
@@ -718,6 +745,7 @@ class GraphTable : public Table {
   int32_t make_complementary_graph(int idx, int64_t byte_size);
   int32_t dump_edges_to_ssd(int idx);
   int32_t get_partition_num(int idx) { return partitions[idx].size(); }
+  std::vector<int> slot_feature_num_map() const { return slot_feature_num_map_; }
   std::vector<uint64_t> get_partition(int idx, int index) {
     if (idx >= (int)partitions.size() || index >= (int)partitions[idx].size())
       return std::vector<uint64_t>();
@@ -735,6 +763,7 @@ class GraphTable : public Table {
 #endif
   virtual int32_t add_comm_edge(int idx, uint64_t src_id, uint64_t dst_id);
   virtual int32_t build_sampler(int idx, std::string sample_type = "random");
+  void set_slot_feature_separator(const std::string &ch);
   void set_feature_separator(const std::string &ch);
   std::vector<std::vector<GraphShard *>> edge_shards, feature_shards;
   size_t shard_start, shard_end, server_num, shard_num_per_server, shard_num;
@@ -773,7 +802,9 @@ class GraphTable : public Table {
   // std::shared_ptr<GraphSampler> graph_sampler;
   // REGISTER_GRAPH_FRIEND_CLASS(2, CompleteGraphSampler, BasicBfsGraphSampler)
 #endif
+  std::string slot_feature_separator_ = std::string(" ");
   std::string feature_separator_ = std::string(" ");
+  std::vector<int> slot_feature_num_map_;
 
   std::vector<std::vector<std::string>> shard_vertex_info;
 };

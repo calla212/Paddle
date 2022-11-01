@@ -73,6 +73,11 @@ paddle::framework::GpuPsCommGraphFea GraphTable::make_gpu_ps_graph_fea(
   std::vector<uint64_t> node_id_array[task_pool_size_];
   std::vector<paddle::framework::GpuPsFeaInfo>
       node_fea_info_array[task_pool_size_];
+  slot_feature_num_map_.resize(slot_num);
+  for (int k = 0; k < slot_num; ++k) {
+    slot_feature_num_map_[k] = 0;
+  }
+
   for (size_t i = 0; i < bags.size(); i++) {
     if (bags[i].size() > 0) {
       tasks.push_back(_shards_task_pool[i]->enqueue([&, i, this]() -> int {
@@ -93,13 +98,17 @@ paddle::framework::GpuPsCommGraphFea GraphTable::make_gpu_ps_graph_fea(
             int total_feature_size = 0;
             for (int k = 0; k < slot_num; ++k) {
               v->get_feature_ids(k, &feature_ids);
-              total_feature_size += feature_ids.size();
+              int feature_ids_size = feature_ids.size();
+              if (slot_feature_num_map_[k] < feature_ids_size) {
+                slot_feature_num_map_[k] = feature_ids_size;
+              }
+              total_feature_size += feature_ids_size;
               if (!feature_ids.empty()) {
                 feature_array[i].insert(feature_array[i].end(),
                                         feature_ids.begin(),
                                         feature_ids.end());
                 slot_id_array[i].insert(
-                    slot_id_array[i].end(), feature_ids.size(), k);
+                    slot_id_array[i].end(), feature_ids_size, k);
               }
             }
             x.feature_size = total_feature_size;
@@ -112,6 +121,13 @@ paddle::framework::GpuPsCommGraphFea GraphTable::make_gpu_ps_graph_fea(
     }
   }
   for (int i = 0; i < (int)tasks.size(); i++) tasks[i].get();
+
+  std::stringstream ss;
+  for (int k = 0; k < slot_num; ++k) {
+    ss << slot_feature_num_map_[k] << " ";
+  }
+  VLOG(0) << "slot_feature_num_map: " << ss.str();
+
   paddle::framework::GpuPsCommGraphFea res;
   uint64_t tot_len = 0;
   for (int i = 0; i < task_pool_size_; i++) {
@@ -1080,14 +1096,44 @@ std::string GraphTable::get_inverse_etype(std::string &etype) {
   return res;
 }
 
-int32_t GraphTable::load_node_and_edge_file(std::string etype,
-                                            std::string ntype,
-                                            std::string epath,
-                                            std::string npath,
+int32_t GraphTable::parse_type_to_typepath(std::string &type2files,
+                                           std::string graph_data_local_path,
+                                           std::vector<std::string> &res_type,
+                                           std::unordered_map<std::string, std::string> &res_type2path) {
+  auto type2files_split = paddle::string::split_string<std::string>(type2files, ",");
+  if (type2files_split.size() == 0) {
+    return -1;
+  }
+  for (auto one_type2file : type2files_split) {
+    auto one_type2file_split = paddle::string::split_string<std::string>(one_type2file, ":");
+    auto type = one_type2file_split[0];
+    auto type_dir = one_type2file_split[1];
+    res_type.push_back(type);
+    res_type2path[type] = graph_data_local_path + "/" + type_dir;
+  }
+  return 0;
+}
+
+int32_t GraphTable::load_node_and_edge_file(std::string etype2files,
+                                            std::string ntype2files,
+                                            std::string graph_data_local_path,
                                             int part_num,
                                             bool reverse) {
-  auto etypes = paddle::string::split_string<std::string>(etype, ",");
-  auto ntypes = paddle::string::split_string<std::string>(ntype, ",");
+  std::vector<std::string> etypes;
+  std::unordered_map<std::string, std::string> edge_to_edgedir;
+  int res = parse_type_to_typepath(etype2files, graph_data_local_path, etypes, edge_to_edgedir);
+  if (res != 0) {
+    VLOG(0) << "parse edge type and edgedir failed!";
+    return -1;
+  }
+  std::vector<std::string> ntypes;
+  std::unordered_map<std::string, std::string> node_to_nodedir;
+  res = parse_type_to_typepath(ntype2files, graph_data_local_path, ntypes, node_to_nodedir);
+  if (res != 0) {
+    VLOG(0) << "parse node type and nodedir failed!";
+    return -1;
+  }
+
   VLOG(0) << "etypes size: " << etypes.size();
   VLOG(0) << "whether reverse: " << reverse;
   is_load_reverse_edge = reverse;
@@ -1099,7 +1145,7 @@ int32_t GraphTable::load_node_and_edge_file(std::string etype,
     tasks.push_back(
         _shards_task_pool[i % task_pool_size_]->enqueue([&, i, this]() -> int {
           if (i < etypes.size()) {
-            std::string etype_path = epath + "/" + etypes[i];
+            std::string etype_path = edge_to_edgedir[etypes[i]];
             auto etype_path_list = paddle::framework::localfs_list(etype_path);
             std::string etype_path_str;
             if (part_num > 0 && part_num < (int)etype_path_list.size()) {
@@ -1117,6 +1163,7 @@ int32_t GraphTable::load_node_and_edge_file(std::string etype,
               this->load_edges(etype_path_str, true, r_etype);
             }
           } else {
+            std::string npath = node_to_nodedir[ntypes[0]];
             auto npath_list = paddle::framework::localfs_list(npath);
             std::string npath_str;
             if (part_num > 0 && part_num < (int)npath_list.size()) {
@@ -2640,8 +2687,13 @@ int GraphTable::parse_feature(int idx,
   // "")
   thread_local std::vector<paddle::string::str_ptr> fields;
   fields.clear();
-  const char c = feature_separator_.at(0);
+  char c = slot_feature_separator_.at(0);
   paddle::string::split_string_ptr(feat_str, len, c, &fields);
+
+  thread_local std::vector<paddle::string::str_ptr> fea_fields;
+  fea_fields.clear();
+  c = feature_separator_.at(0);
+  paddle::string::split_string_ptr(fields[1].ptr, fields[1].len, c, &fea_fields);
 
   std::string name = fields[0].to_string();
   auto it = feat_id_map[idx].find(name);
@@ -2653,26 +2705,26 @@ int GraphTable::parse_feature(int idx,
       //      string_vector_2_string(fields.begin() + 1, fields.end(), ' ',
       //      fea_ptr);
       FeatureNode::parse_value_to_bytes<uint64_t>(
-          fields.begin() + 1, fields.end(), fea_ptr);
+          fea_fields.begin(), fea_fields.end(), fea_ptr);
       return 0;
     } else if (dtype == "string") {
-      string_vector_2_string(fields.begin() + 1, fields.end(), ' ', fea_ptr);
+      string_vector_2_string(fea_fields.begin(), fea_fields.end(), ' ', fea_ptr);
       return 0;
     } else if (dtype == "float32") {
       FeatureNode::parse_value_to_bytes<float>(
-          fields.begin() + 1, fields.end(), fea_ptr);
+          fea_fields.begin(), fea_fields.end(), fea_ptr);
       return 0;
     } else if (dtype == "float64") {
       FeatureNode::parse_value_to_bytes<double>(
-          fields.begin() + 1, fields.end(), fea_ptr);
+          fea_fields.begin(), fea_fields.end(), fea_ptr);
       return 0;
     } else if (dtype == "int32") {
       FeatureNode::parse_value_to_bytes<int32_t>(
-          fields.begin() + 1, fields.end(), fea_ptr);
+          fea_fields.begin(), fea_fields.end(), fea_ptr);
       return 0;
     } else if (dtype == "int64") {
       FeatureNode::parse_value_to_bytes<uint64_t>(
-          fields.begin() + 1, fields.end(), fea_ptr);
+          fea_fields.begin(), fea_fields.end(), fea_ptr);
       return 0;
     }
   } else {
@@ -2951,6 +3003,10 @@ int32_t GraphTable::pull_graph_list(int type_id,
 
 void GraphTable::set_feature_separator(const std::string &ch) {
   feature_separator_ = ch;
+}
+
+void GraphTable::set_slot_feature_separator(const std::string &ch) {
+  slot_feature_separator_ = ch;
 }
 
 int32_t GraphTable::get_server_index_by_id(uint64_t id) {
