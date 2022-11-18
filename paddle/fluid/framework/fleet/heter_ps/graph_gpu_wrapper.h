@@ -53,11 +53,12 @@ class GraphGpuWrapper {
                           std::string graph_data_local_path,
                           int part_num,
                           bool reverse);
-  void load_shard_graph(std::string etype,
-                        std::string ntype,
-                        std::string spath,
+  void load_shard_graph(std::string etype2files,
+                        std::string ntype2files,
+                        std::string shard_graph_data_local_path,
+                        int shard_id,
                         int part_num,
-                        int shard_id);
+                        bool reverse);
   void partition_shard(int shard_num,
                        std::string part_path,
                        std::string part_method);

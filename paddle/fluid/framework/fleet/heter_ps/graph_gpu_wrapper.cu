@@ -170,7 +170,37 @@ void GraphGpuWrapper::load_node_and_edge(std::string etype2files,
                                          bool reverse) {
   ((GpuPsGraphTable *)graph_table)
       ->cpu_graph_table_->load_node_and_edge_file(
-          etype, ntype, epath, npath, part_num, reverse);
+          etype2files, ntype2files, graph_data_local_path, part_num, reverse);
+}
+
+void GraphGpuWrapper::load_shard_graph(std::string etype2files,
+                                       std::string ntype2files,
+                                       std::string shard_graph_data_local_path,
+                                       int shard_id,
+                                       int part_num,
+                                       bool reverse) {
+  ((GpuPsGraphTable *)graph_table)
+      ->cpu_graph_table_->load_shard_graph_file(
+          etype2files, ntype2files, shard_graph_data_local_path, shard_id, part_num, reverse);
+}
+
+void GraphGpuWrapper::partition_shard(int shard_num, std::string part_path, std::string part_method) {
+  if (part_method == "") part_method = "normal";
+  ((GpuPsGraphTable *)graph_table)
+      ->cpu_graph_table_->partition_shard_file(shard_num, part_path, part_method);
+}
+
+void GraphGpuWrapper::clear_shard_graph(int etype_num, int gpu_num) {
+  ((GpuPsGraphTable *)graph_table)
+    ->cpu_graph_table_->clear_shard_graph_table();
+
+  // for (int i = 0; i < etype_num; ++i)
+  //   ((GpuPsGraphTable *)graph_table) -> clear_graph_info(i);
+
+  // for (int i = 0; i < gpu_num; ++i)
+  //   ((GpuPsGraphTable *)graph_table) -> clear_feature_info(i);
+
+  VLOG(0) << "Clear " << etype_num << " graphs on " << gpu_num << " GPUs.";
 }
 
 void GraphGpuWrapper::add_table_feat_conf(std::string table_name,

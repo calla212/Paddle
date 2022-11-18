@@ -543,7 +543,7 @@ class GraphTable : public Table {
                                   std::string ntype2files,
                                   std::string graph_data_local_path,
                                   int part_num,
-                                int shard_id);
+                                  bool reverse);
 
   int32_t partition_shard_file(int shard_num, const std::string& part_path, std::string part_method);
 
@@ -570,34 +570,12 @@ class GraphTable : public Table {
 
   int load_shard_info(const std::string& spath, int ntype_size);
   
-  int32_t load_shard_graph_file(std::string etype,
-                                std::string ntype,
-                                std::string spath,
+  int32_t load_shard_graph_file(std::string etype2files,
+                                std::string ntype2files,
+                                std::string shard_graph_data_local_path,
+                                int shard_id,
                                 int part_num,
-                                int shard_id);
-
-  int32_t partition_shard_file(int shard_num, const std::string& part_path, std::string part_method);
-
-  int32_t build_inv_shard_graph(int idx);
-
-  void clear_shard_graph_table(void);
-
-  int do_partition_shard(int shard_graph_num,
-                         std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
-                         std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs,
-                         std::string part_method);
-
-  int normal_partition_shard(int shard_graph_num, 
-                             std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
-                             std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs);
-  
-  int metis_partition_shard(int shard_graph_num,
-                            std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
-                            std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs);
-
-  int quick_partition_shard(int shard_graph_num,
-                            std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
-                            std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs);
+                                bool reverse);
 
   std::string get_inverse_etype(std::string &etype);
   
