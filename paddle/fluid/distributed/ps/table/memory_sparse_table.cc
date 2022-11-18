@@ -418,8 +418,8 @@ int32_t MemorySparseTable::Save(const std::string& dirname,
     for (auto it = shard.begin(); it != shard.end(); ++it) {
       _value_accesor->UpdateStatAfterSave(it.value().data(), save_param);
     }
-    LOG(INFO) << "MemorySparseTable save prefix success, path: "
-              << channel_config.path << " feasign_size: " << feasign_size;
+    // LOG(INFO) << "MemorySparseTable save prefix success, path: "
+    //           << channel_config.path << " feasign_size: " << feasign_size;
   }
   _local_show_threshold = tk.top();
   // int32 may overflow need to change return value

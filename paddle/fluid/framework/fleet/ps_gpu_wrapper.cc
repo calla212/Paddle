@@ -327,7 +327,7 @@ void PSGPUWrapper::PreBuildTask(std::shared_ptr<HeterContext> gpu_task) {
       if (i == 0 && j == multi_mf_dim_ - 1) {
         gpu_task->feature_dim_keys_[i][j].push_back(0);
       }
-      VLOG(0) << "GpuPs shard: " << i << "mf dim: " << index_dim_vec_[j]
+      VLOG(1) << "GpuPs shard: " << i << "mf dim: " << index_dim_vec_[j]
               << " key len: " << gpu_task->feature_dim_keys_[i][j].size();
       gpu_task->value_dim_ptr_[i][j].resize(
           gpu_task->feature_dim_keys_[i][j].size());
@@ -450,7 +450,7 @@ void PSGPUWrapper::BuildPull(std::shared_ptr<HeterContext> gpu_task) {
           sleep(300);
           exit(-1);
         } else {
-          VLOG(0) << "FleetWrapper Pull sparse to local done with table size: "
+          VLOG(1) << "FleetWrapper Pull sparse to local done with table size: "
                   << local_dim_keys[i][j].size();
         }
       };
@@ -1071,7 +1071,7 @@ void PSGPUWrapper::EndPass() {
     int mf_dim = this->index_dim_vec_[j];
     size_t feature_value_size =
         accessor_wrapper_ptr->GetFeatureValueSize(mf_dim);
-    VLOG(0) << "dump pool to cpu table: " << i << "with mf dim: " << mf_dim
+    VLOG(1) << "dump pool to cpu table: " << i << "with mf dim: " << mf_dim
             << " key_len :" << len
             << " feature_value_size:" << feature_value_size;
     char* test_build_values = (char*)malloc(feature_value_size * real_len);
