@@ -554,19 +554,32 @@ class GraphTable : public Table {
   int do_partition_shard(int shard_graph_num,
                          std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
                          std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs,
+                         std::vector<std::map<uint64_t, int>>& node_colors,
                          std::string part_method);
+  
+  int write_subgraph(int shard_graph_num,
+                     std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
+                     std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs,
+                     const std::string& part_path);
+
+  int filter_vertex(int shard_graph_num,
+                    std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
+                    std::vector<std::map<uint64_t, int>>& node_colors);
 
   int normal_partition_shard(int shard_graph_num, 
                              std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
                              std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs);
+                            //  std::vector<std::map<uint64_t, int>>& node_colors);
   
   int metis_partition_shard(int shard_graph_num,
                             std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
-                            std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs);
+                            std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs,
+                            std::vector<std::map<uint64_t, int>>& node_colors);
 
   int quick_partition_shard(int shard_graph_num,
                             std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
-                            std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs);
+                            std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs,
+                            std::vector<std::map<uint64_t, int>>& node_colors);
 
   int load_shard_info(const std::string& spath, int ntype_size);
   
