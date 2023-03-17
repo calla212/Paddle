@@ -1194,10 +1194,15 @@ int32_t GraphTable::load_node_and_edge_file(std::string etype2files,
   return 0;
 }
 
-int GraphTable::load_shard_info(const std::string& spath, int ntype_size) {
-  std::ifstream fin(spath + "ginfo");
+int GraphTable::load_subgraph_info(const std::string& spath, int ntype_size) {
+  std::string ginfo_path = spath + "ginfo";
+  std::ifstream fin(ginfo_path);
+  if (!fin.is_open()) {
+    VLOG(0) << "Cannot open " << ginfo_path;
+    return -1;
+  }
   std::string v_name, feature_name;
-  shard_vertex_info.resize(ntype_size);
+  sg_vertex_info.resize(ntype_size);
   while (fin >> v_name) {
     int feature_num = 0;
     fin >> feature_num;
@@ -1206,9 +1211,10 @@ int GraphTable::load_shard_info(const std::string& spath, int ntype_size) {
       return -1;
     }
     int idx = feature_to_id[v_name];
+    VLOG(0) << v_name << ' ' << idx;
     while (feature_num--) {
       fin >> feature_name;
-      shard_vertex_info[idx].push_back(feature_name);
+      sg_vertex_info[idx].push_back(feature_name);
     }
   }
   fin.close();
@@ -1241,64 +1247,66 @@ int GraphTable::load_shard_info(const std::string& spath, int ntype_size) {
 //   return 0;
 // }
 
-int32_t GraphTable::build_inv_shard_graph(int idx) {
-  auto u2v = paddle::string::split_string<std::string>(id_to_edge[idx], "2");
-  int inv_idx = edge_to_id[u2v[1] + "2" + u2v[0]];
-  bool is_weighted = false;
-  float weight = 1.0;
+// int32_t GraphTable::build_inv_subgraph(int idx) {
+//   auto u2v = paddle::string::split_string<std::string>(id_to_edge[idx], "2");
+//   int inv_idx = edge_to_id[u2v[1] + "2" + u2v[0]];
+//   bool is_weighted = false;
+//   float weight = 1.0;
 
-  uint64_t op_sum = 0;
+//   uint64_t op_sum = 0;
 
-  for (int i = 0; i < shard_num; i++) {
-    auto &shards = edge_shards[idx][i]->get_bucket();
-    for (auto ptr : shards) {
-      auto uid = ptr->get_id();
-      for (size_t neighbor_id = 0; neighbor_id < ptr->get_neighbor_size(); ++neighbor_id) {
-        uint64_t vid = ptr->get_neighbor_id(neighbor_id);
-        auto node = edge_shards[inv_idx][(vid % shard_num) - shard_start]->add_graph_node(vid);
-        if (node != NULL) {
-          node->build_edges(is_weighted);
-          node->add_edge(uid, weight);
-          op_sum++;
-        }    
-      }
-    }
-  }
+//   for (int i = 0; i < shard_num; i++) {
+//     auto &shards = edge_shards[idx][i]->get_bucket();
+//     for (auto ptr : shards) {
+//       auto uid = ptr->get_id();
+//       for (size_t neighbor_id = 0; neighbor_id < ptr->get_neighbor_size(); ++neighbor_id) {
+//         uint64_t vid = ptr->get_neighbor_id(neighbor_id);
+//         auto node = edge_shards[inv_idx][(vid % shard_num) - shard_start]->add_graph_node(vid);
+//         if (node != NULL) {
+//           node->build_edges(is_weighted);
+//           node->add_edge(uid, weight);
+//           op_sum++;
+//         }    
+//       }
+//     }
+//   }
 
-  VLOG(0) << "Build " << op_sum << " edges for " << id_to_edge[inv_idx] << " graph(inv)";
-  return 0;
-}
+//   VLOG(0) << "Build " << op_sum << " edges for " << id_to_edge[inv_idx] << " graph(inv)";
+//   return 0;
+// }
 
-int32_t GraphTable::load_shard_graph_file(std::string etype2files,
-                                          std::string ntype2files,
-                                          std::string shard_graph_data_local_path,
-                                          int shard_id,
-                                          int part_num,
-                                          bool reverse) {
-  shard_graph_data_local_path += "shard_" + std::to_string(shard_id) + "/";
+int32_t GraphTable::prepare_train_subgraph(std::string etype2files,
+                                           std::string ntype2files,
+                                           std::string subgraph_path,
+                                           int load_sg_id,
+                                           int part_num,
+                                           bool reverse,
+                                           bool load_halo,
+                                           double halo_a, double halo_b, int epoch_id, int epoch_num, int layer_num) {
+  std::string subgraph_data_path = subgraph_path + "sg_" + std::to_string(load_sg_id) + "/";
   std::vector<std::string> etypes;
   std::unordered_map<std::string, std::string> edge_to_edgedir;
-  int res = parse_type_to_typepath(etype2files, shard_graph_data_local_path, etypes, edge_to_edgedir);
+  int res = parse_type_to_typepath(etype2files, subgraph_data_path, etypes, edge_to_edgedir);
   if (res != 0) {
     VLOG(0) << "parse edge type and edgedir failed!";
     return -1;
   }
   std::vector<std::string> ntypes;
   std::unordered_map<std::string, std::string> node_to_nodedir;
-  res = parse_type_to_typepath(ntype2files, shard_graph_data_local_path, ntypes, node_to_nodedir);
+  res = parse_type_to_typepath(ntype2files, subgraph_data_path, ntypes, node_to_nodedir);
   if (res != 0) {
     VLOG(0) << "parse node type and nodedir failed!";
     return -1;
   }
-  if (shard_vertex_info.empty()) {
-    load_shard_info(shard_graph_data_local_path, ntypes.size());
+  if (sg_vertex_info.empty()) {
+    load_subgraph_info(subgraph_path, ntypes.size());
     VLOG(0) << "whether reverse: " << reverse;
     is_load_reverse_edge = reverse;
   }
 
-  VLOG(0) << "[shard_graph " << shard_id << "] etypes size: " << etypes.size() << " ; ntypes size: " << ntypes.size() << " ; shard_vertex size: " << shard_vertex_info.size();
+  VLOG(0) << "[Subgraph_ " << load_sg_id << "] etypes size: " << etypes.size() << " ; ntypes size: " << ntypes.size() << " ; shard_vertex size: " << sg_vertex_info.size();
   std::string delim = ";";
-  size_t total_len = (etypes.size() << 1) + shard_vertex_info.size();
+  size_t total_len = etypes.size() * 2 + sg_vertex_info.size();
 
   std::vector<std::future<int>> tasks;
   for (size_t i = 0; i < total_len; i++) {
@@ -1307,12 +1315,10 @@ int32_t GraphTable::load_shard_graph_file(std::string etype2files,
         if (i < (etypes.size() << 1)) {
           auto etype = etypes[i >> 1];
           if (i & 1) etype = get_inverse_etype(etype);
-          std::string etype_path = shard_graph_data_local_path + etype + "/";
+          std::string etype_path = subgraph_data_path + etype + "/";
           auto etype_path_list = paddle::framework::localfs_list(etype_path);
-          std::string etype_path_str;
-          etype_path_str =
+          std::string etype_path_str =
             paddle::string::join_strings(etype_path_list, delim);
-          
           this->load_edges(etype_path_str, false, etype, 1);
         } else {
           if (ntypes.size() == 0) {
@@ -1320,7 +1326,7 @@ int32_t GraphTable::load_shard_graph_file(std::string etype2files,
             return 0;
           }
 
-          int idx = i - (etypes.size() << 1);
+          int idx = i - etypes.size() * 2;
           // auto npath = spath + "node_" + ntypes[idx];
           std::string npath = node_to_nodedir[ntypes[idx]];
           auto npath_list = paddle::framework::localfs_list(npath);
@@ -1338,8 +1344,162 @@ int32_t GraphTable::load_shard_graph_file(std::string etype2files,
   for (int i = 0; i < (int)tasks.size(); i++) tasks[i].get();
 
   // for (int idx = 0; idx < id_to_edge.size(); idx += 2) {
-  //   this->build_inv_shard_graph(idx);
+  //   this->build_inv_subgraph(idx);
   // }
+
+  if (load_halo) {
+    std::string halograph_data_path = subgraph_data_path + "halo/";
+    prepare_halograph(halograph_data_path, halo_a, halo_b, epoch_id, epoch_num, layer_num);
+  }
+  return 0;
+}
+
+bool halo_func(double a, double b, double s_val, double dist_val, int epoch_id, double epoch_val) {
+  double t = a * 1.0 / epoch_id * dist_val + b * epoch_val * s_val;
+  double t_max = a  * 1.0 / epoch_id + b * epoch_val;
+  
+  std::random_device rd;  // Will be used to obtain a seed for the random number engine
+  std::mt19937 gen(rd()); // Standard mersenne_twister_engine seeded with rd()
+  std::uniform_real_distribution<double> dis(0.0, t_max);
+  return dis(gen) < t;
+}
+
+int GraphTable::prepare_halograph(std::string path,
+                                  double halo_a, double halo_b, int epoch_id, int epoch_num, int layer_num) {
+  // v_id[uint64] dist[int] S[double] ngb_num[uint64] node_type[int] ngbs...[uint64] feats...[uint64]
+  
+  std::vector<std::future<int>> tasks;
+  std::vector<std::vector<std::vector<std::map<uint64_t, std::vector<uint64_t>>>>> halo_info(shard_num);
+  const double epoch_val = 1.0 * epoch_id / epoch_num;
+
+  std::vector<uint64_t> part_v_sum(shard_num), part_e_sum(shard_num), part_v_cnt(shard_num), part_e_cnt(shard_num);
+
+  VLOG(0) << "Begin : Load&Pick HaloGraph";
+  for (int part_id = 0; part_id < shard_num; ++part_id) {
+    tasks.push_back(
+      _shards_task_pool[part_id % task_pool_size_]->enqueue([&, part_id]() -> int {
+        std::string halo_path = path + "hg-" + std::to_string(part_id);
+        std::ifstream file(halo_path, std::ios::in | std::ios::binary | std::ios::ate);
+        uint64_t local_count = 0;
+        uint64_t local_valid_count = 0;
+        halo_info[part_id].resize(shard_num);
+        for (int i = 0; i < shard_num; ++i)
+          halo_info[part_id][i].resize(id_to_edge.size());
+  
+        if (!file.is_open()) {
+          VLOG(0) << "Open " << halo_path << " Failed.";
+          return -1;
+        }
+
+        std::streamsize size = file.tellg();
+        file.seekg(0, std::ios::beg);
+        std::vector<char> buffer(size);
+        file.read(buffer.data(), size);
+        file.close();
+
+        char* ptr = buffer.data();
+        char* const beg_ptr = ptr;
+        while ((ptr - beg_ptr) < size) {
+          uint64_t u_id = *((uint64_t*)ptr);
+          ptr += sizeof(uint64_t);
+          uint32_t u_idx = *ptr;
+          ptr += sizeof(int);
+          uint32_t dist = *ptr;
+          ptr += sizeof(int);
+          double s_val = *((double*)ptr);
+          ptr += sizeof(double);
+
+          auto& feature_list = sg_vertex_info[u_idx];
+          const int feat_num = feature_list.size();
+          
+          part_v_sum[part_id]++;
+
+          if (halo_func(halo_a, halo_b, s_val, 1.0 * (layer_num - dist + 1) / layer_num , epoch_id, epoch_val)) {
+            part_v_cnt[part_id]++;
+            for (auto e_idx : search_graphs[u_idx]) {
+              uint64_t ngb_num = *((uint64_t*)ptr);
+              ptr += sizeof(uint64_t);
+              part_e_sum[part_id] += ngb_num;
+              auto e_ptr = edge_shards[e_idx][part_id]->add_graph_node(u_id);
+              if (e_ptr != nullptr) {
+                int v_idx = get_idx(e_idx, 1);
+                for (uint64_t ngb_id = 0; ngb_id < ngb_num; ++ngb_id) {
+                  uint64_t v_id = *((uint64_t*)ptr);
+                  ptr += sizeof(uint64_t);
+                  halo_info[part_id][v_id % shard_num][v_idx][v_id].push_back(u_id);
+                  halo_info[part_id][part_id][u_idx][u_id].push_back(v_id);
+                }
+              }
+              else ptr += sizeof(uint64_t) * ngb_num;
+            }
+
+            auto f_ptr = feature_shards[u_idx][part_id]->add_feature_node(u_id, false);
+            if (f_ptr != NULL) {
+              for (int feat_id = 0; feat_id < feat_num; ++feat_id) {
+                uint64_t feat_val = *((uint64_t*)ptr);
+                ptr += sizeof(uint64_t);
+                parse_shard_feature(u_idx, feature_list[feat_id], feat_val, f_ptr);
+              }
+            }
+            else ptr += sizeof(uint64_t) * feat_num;
+          }
+          else {
+            for (auto e_idx : search_graphs[u_idx]) {
+              uint64_t ngb_num = *((uint64_t*)ptr);
+              ptr += sizeof(uint64_t) * (ngb_num + 1);
+              part_e_sum[part_id] += ngb_num;
+            }
+            ptr += sizeof(uint64_t) * feat_num;
+          }
+        }
+        return 0;
+    }));
+  }
+  for (int i = 0; i < (int)tasks.size(); i++) tasks[i].get();
+  VLOG(0) << "Finish : Load&Pick HaloGraph";
+
+  bool is_weighted = false;
+  float weight = 1.0;
+  tasks.clear();
+  VLOG(0) << "Begin : Pick Trained HaloGraph";
+  for (int part_id = 0; part_id < shard_num; ++part_id) {
+    tasks.push_back(
+      _shards_task_pool[part_id % task_pool_size_]->enqueue([&, part_id]() -> int {
+        for (int _part_id = 0; _part_id < shard_num; ++_part_id) {
+          for (int e_idx = 0; e_idx < id_to_edge.size(); ++e_idx) {
+            int v_idx = get_idx(e_idx, 1);
+            for (auto halo_edge : halo_info[_part_id][part_id][e_idx]) {
+              uint64_t u_id = halo_edge.first;
+              auto u_ptr = find_node(0, e_idx, u_id);
+              if (u_ptr != nullptr) {
+                for (auto v_id : halo_edge.second) {
+                  if (find_node(0, v_idx, v_id) != nullptr) {
+                    u_ptr->build_edges(is_weighted);
+                    u_ptr->add_edge(v_id, weight);
+                    part_e_cnt[part_id]++;
+                  }
+                }
+              }
+            }
+          }
+        }
+        return 0;
+    }));
+  }
+  for (int i = 0; i < (int)tasks.size(); i++) tasks[i].get();
+
+  uint64_t v_sum = 0, v_cnt = 0, e_sum = 0, e_cnt = 0;
+  for (int i = 0; i < shard_num; ++i) {
+    v_sum += part_v_sum[i];
+    v_cnt += part_v_cnt[i];
+    e_sum += part_e_sum[i];
+    e_cnt += part_e_cnt[i];
+  }
+  e_sum <<= 1;
+  VLOG(0) << "[HaloGraph] Read " << v_sum << " vertices. Pick " << v_cnt << " vertices " << 1.0 * v_cnt / v_sum;
+  VLOG(0) << "[HaloGraph] Read " << e_sum << " edges.    Pick " << e_cnt << " edges    " << 1.0 * e_cnt / e_sum;
+
+  VLOG(0) << "Finish : Build HaloGraph";
   return 0;
 }
 
@@ -1351,19 +1511,11 @@ uint64_t node_cost(GraphNode* node) {
   return ret;
 }
 
-int GraphTable::metis_partition_shard(int shard_graph_num,
-                                      std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
-                                      std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs,
-                                      std::vector<std::map<uint64_t, int>>& node_colors) {
-
-  std::vector<std::vector<int>> search_graphs;
-  search_graphs.resize(id_to_feature.size());
-  for (int idx = 0; idx < id_to_edge.size(); ++idx) {
-    auto node_type = paddle::string::split_string<std::string>(id_to_edge[idx], "2");
-    int utype_id = feature_to_id[node_type[0]];
-    search_graphs[utype_id].push_back(idx);
-  }
-
+int GraphTable::metis_partition_coregraph(int subgraph_num,
+                                          // std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& core_nodes,
+                                          // std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& core_features,
+                                          std::vector<std::vector<std::vector<std::vector<uint64_t>>>>& core_vertices,
+                                          std::vector<std::vector<std::map<uint64_t, int>>>& vertex_colors) {
   struct MetisCSR {
     // std::map<std::pair<int, uint64_t>, idx_t> g2m;
     // std::vector<std::pair<int, uint64_t>> m2g;
@@ -1395,7 +1547,7 @@ int GraphTable::metis_partition_shard(int shard_graph_num,
       part_res.resize(node_num);
       idx_t nWeights = 1;                // 节点权重维数
       idx_t objval;                      // 目标函数值
-      int ret;
+      int ret = -1;
 
       if (part_num <= 8) {
         ret = METIS_PartGraphRecursive(&node_num, &nWeights, xadj.data(), adjncy.data(),
@@ -1496,9 +1648,7 @@ int GraphTable::metis_partition_shard(int shard_graph_num,
         auto xadj_offset = suffix_cnt[part_id];
         auto adjncy_offset = suffix_neighbor_cnt[part_id];
         for (auto u_pair : part_g2m[part_id]) {
-          // if (u_pair.first.second == 8109952151798241000ul) VLOG(0) << u_pair.second.first << ' ' << u_pair.second.second << ' ' << xadj_offset << ' ' << adjncy_offset;
           m_csr.xadj[xadj_offset + u_pair.second.first] = adjncy_offset + u_pair.second.second;
-          // if (part_id == 0) VLOG(0) << u_pair.second << '+' << xadj_offset << ' ' << adjncy_offset;
           size_t neighbor_cnt = 0;
           for (auto idx : search_graphs[u_pair.first.first]) {
             auto node_type = paddle::string::split_string<std::string>(id_to_edge[idx], "2");
@@ -1539,7 +1689,7 @@ int GraphTable::metis_partition_shard(int shard_graph_num,
   // VLOG(0) << "-=-=-=-===>" << part_g2m[638][{1, 14681717957525896638ul}].first;
   // return 0;
 
-  m_csr.part(shard_graph_num);
+  m_csr.part(subgraph_num);
 
   // for (size_t muid = 0; muid < m_csr.node_cnt; ++muid) {
   //   auto u = m_csr.m2g[muid];
@@ -1548,80 +1698,133 @@ int GraphTable::metis_partition_shard(int shard_graph_num,
   //   for (auto idx : search_graphs[utype]) {
   //     auto g_ptr = dynamic_cast<GraphNode*>(find_node(0, idx, uid));
   //     if (g_ptr != nullptr)
-  //       node_ptrs[idx][m_csr.part_res[muid]][uid % shard_num].push_back(g_ptr);
+  //       core_nodes[idx][m_csr.part_res[muid]][uid % shard_num].push_back(g_ptr);
   //   }
   //   auto f_ptr = dynamic_cast<FeatureNode*>(find_node(1, utype, uid));
   //   if (f_ptr != nullptr)
-  //     feature_ptrs[utype][m_csr.part_res[muid]][uid % shard_num].push_back(f_ptr);
+  //     core_features[utype][m_csr.part_res[muid]][uid % shard_num].push_back(f_ptr);
   // }
 
   tasks.clear();
-
   for (int part_id = 0; part_id < shard_num; ++part_id) {
     tasks.push_back(_shards_task_pool[part_id % task_pool_size_]->enqueue(
       [&, part_id]() mutable -> std::pair<idx_t, idx_t> {
         auto xadj_offset = suffix_cnt[part_id];
         for (auto u_pair : part_g2m[part_id]) {
           auto src_idx = u_pair.first.first;
-          if ((src_idx & 1) == 0) {
-            auto uid = u_pair.first.second;
-            auto sg_id = m_csr.part_res[xadj_offset + u_pair.second.first];
-            if (sg_id >= shard_graph_num || sg_id < 0) {
-              VLOG(0) << "Wrong ShardGraph ID.";
-              continue;
-            }
-
-            for (auto idx : search_graphs[src_idx]) {
-              auto g_ptr = dynamic_cast<GraphNode*>(find_node(0, idx, uid));
-              if (g_ptr != nullptr) {
-                node_ptrs[idx >> 1][sg_id][part_id].push_back(g_ptr);
-                node_colors[idx >> 1][uid] = sg_id;
-                auto node_type = paddle::string::split_string<std::string>(id_to_edge[idx], "2");
-                int dst_idx = feature_to_id[node_type[1]];
-                for (size_t i = 0; i < g_ptr->get_neighbor_size(); ++i) {
-                  auto vid = g_ptr->get_neighbor_id(i);
-                  auto f_ptr = dynamic_cast<FeatureNode*>(find_node(1, dst_idx, vid));
-                  if (f_ptr != nullptr)
-                    feature_ptrs[dst_idx][sg_id][part_id].push_back(f_ptr);
-                }
-              }
-            }
-            auto f_ptr = dynamic_cast<FeatureNode*>(find_node(1, src_idx, uid));
-            if (f_ptr != nullptr)
-              feature_ptrs[src_idx][sg_id][part_id].push_back(f_ptr);
+          // if ((src_idx & 1) == 0) {
+          auto u_id = u_pair.first.second;
+          auto sg_id = m_csr.part_res[xadj_offset + u_pair.second.first];
+          if (sg_id >= subgraph_num || sg_id < 0) {
+            VLOG(0) << "Wrong ShardGraph ID.";
+            continue;
           }
+
+          if (find_node(1, src_idx, u_id) != nullptr) {
+            core_vertices[part_id][src_idx][sg_id].push_back(u_id);
+            vertex_colors[src_idx][part_id][u_id] = sg_id;
+          }
+          else VLOG(0) << "ERROR : nullptr with " << u_id;
+
+          // for (auto idx : search_graphs[src_idx]) {
+          //   // auto g_ptr = dynamic_cast<GraphNode*>(find_node(0, idx, u_id));
+          //   // if (g_ptr != nullptr) {
+          //   if (find_node(0, idx, u_id) != nullptr) {
+          //     // core_nodes[idx][sg_id][part_id].push_back(g_ptr);
+          //     core_vertices[part_id][idx][sg_id].push_back(u_id);
+          //     vertex_colors[idx][part_id][u_id] = sg_id;
+          //     // auto f_ptr = dynamic_cast<FeatureNode*>(find_node(1, src_idx, uid));
+          //     // if (f_ptr != nullptr)
+          //       // core_features[src_idx][sg_id][part_id].push_back(f_ptr);
+              
+          //     // auto node_type = paddle::string::split_string<std::string>(id_to_edge[idx], "2");
+          //     // int dst_idx = feature_to_id[node_type[1]];
+          //     // for (size_t i = 0; i < g_ptr->get_neighbor_size(); ++i) {
+          //     //   auto vid = g_ptr->get_neighbor_id(i);
+          //     //   auto f_ptr = dynamic_cast<FeatureNode*>(find_node(1, dst_idx, vid));
+          //     //   if (f_ptr != nullptr)
+          //     //     core_features[dst_idx][sg_id][part_id].push_back(f_ptr);
+          //     // }
+          //   }
+          //   else VLOG(0) << "ERROR : nullptr with " << u_id;
+          // }
+          // }
         }
         return {0, 0};
       }));
   }
   for (size_t i = 0; i < tasks.size(); i++) tasks[i].get();
+  VLOG(0) << "METIS Partition Completed.";
   return 0;
 }
 
-int GraphTable::quick_partition_shard(int shard_graph_num,
-                                      std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
-                                      std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs,
-                                      std::vector<std::map<uint64_t, int>>& node_colors) {
+int GraphTable::quick_partition_coregraph(int subgraph_num,
+                                          // std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& core_nodes,
+                                          // std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& core_features,
+                                          std::vector<std::vector<std::vector<std::vector<uint64_t>>>>& core_vertices,
+                                          std::vector<std::vector<std::map<uint64_t, int>>>& vertex_colors) {
   std::vector<std::future<int64_t>> tasks;
+  // for (int part_id = 0; part_id < shard_num; ++part_id) {
+  //   tasks.push_back(_shards_task_pool[part_id % task_pool_size_]->enqueue(
+  //     [&, part_id]() mutable -> int64_t {
+  //       for (int idx = 0; idx < id_to_edge.size(); idx += 2) {
+  //         auto node_type = paddle::string::split_string<std::string>(id_to_edge[idx], "2");
+  //         int src_idx = feature_to_id[node_type[0]];
+
+  //         auto& shards = edge_shards[idx][part_id]->get_bucket();
+  //         size_t v_num = shards.size();
+  //         size_t v_shard_num = (v_num + subgraph_num - 1) / subgraph_num;
+  //         for (int shard_id = 0; shard_id < subgraph_num; ++shard_id) {
+  //           size_t v_start = shard_id * v_shard_num, v_end = std::min((shard_id + 1) * v_shard_num, v_num);
+  //           for (; v_start < v_end; ++v_start) {
+  //             auto node = shards[v_start];
+  //             core_nodes[idx >> 1][shard_id][part_id].push_back(dynamic_cast<GraphNode*>(shards[v_start]));
+  //             vertex_colors[idx >> 1][node->get_id()] = shard_id;
+  //             auto feature = dynamic_cast<FeatureNode*>(find_node(1, src_idx, node->get_id()));
+  //             if (feature != nullptr) // To Check: Ignore the vertices which can not be find in the feature_shards
+  //               core_features[src_idx][shard_id][part_id].push_back(feature);
+  //           }
+  //         }
+  //       }
+  //       return 0;
+  //     }));
+  // }
+  // for (size_t i = 0; i < tasks.size(); i++) tasks[i].get();
+
+  // for (int part_id = 0; part_id < shard_num; ++part_id) {
+  //   tasks.push_back(_shards_task_pool[part_id % task_pool_size_]->enqueue(
+  //     [&, part_id]() -> int64_t {
+  //       for (int e_idx = 0; e_idx < id_to_edge.size(); ++e_idx) {
+  //         int u_idx = get_idx(e_idx, 0);
+  //         auto& shards = edge_shards[e_idx][part_id]->get_bucket();
+  //         size_t u_num = shards.size();
+  //         size_t u_sg_num = (u_num + subgraph_num - 1) / subgraph_num;
+  //         for (int sg_id = 0; sg_id < subgraph_num; ++sg_id) {
+  //           size_t u_start = sg_id * u_sg_num, u_end = std::min((sg_id + 1) * u_sg_num, u_num);
+  //           for (; u_start < u_end; ++u_start) {
+  //             auto u_id = shards[u_start]->get_id();
+  //             core_vertices[part_id][u_idx][sg_id].push_back(u_id);
+  //             vertex_colors[u_idx][part_id][u_id] = sg_id;
+  //           }
+  //         }
+  //       }
+  //       return 0;
+  //     }));
+  // }
+
   for (int part_id = 0; part_id < shard_num; ++part_id) {
     tasks.push_back(_shards_task_pool[part_id % task_pool_size_]->enqueue(
-      [&, part_id]() mutable -> int64_t {
-        for (int idx = 0; idx < id_to_edge.size(); idx += 2) {
-          auto node_type = paddle::string::split_string<std::string>(id_to_edge[idx], "2");
-          int src_idx = feature_to_id[node_type[0]];
-
-          auto& shards = edge_shards[idx][part_id]->get_bucket();
-          size_t v_num = shards.size();
-          size_t v_shard_num = (v_num + shard_graph_num - 1) / shard_graph_num;
-          for (int shard_id = 0; shard_id < shard_graph_num; ++shard_id) {
-            size_t v_start = shard_id * v_shard_num, v_end = std::min((shard_id + 1) * v_shard_num, v_num);
-            for (; v_start < v_end; ++v_start) {
-              auto node = shards[v_start];
-              node_ptrs[idx >> 1][shard_id][part_id].push_back(dynamic_cast<GraphNode*>(shards[v_start]));
-              node_colors[idx >> 1][node->get_id()] = shard_id;
-              auto feature = dynamic_cast<FeatureNode*>(find_node(1, src_idx, node->get_id()));
-              if (feature != nullptr) // To Check: Ignore the vertices which can not be find in the feature_shards
-                feature_ptrs[src_idx][shard_id][part_id].push_back(feature);
+      [&, part_id]() -> int64_t {
+        for (int u_idx = 0; u_idx < id_to_feature.size(); ++u_idx) {
+          auto& shards = feature_shards[u_idx][part_id]->get_bucket();
+          size_t u_num = shards.size();
+          size_t u_sg_num = (u_num + subgraph_num - 1) / subgraph_num;
+          for (int sg_id = 0; sg_id < subgraph_num; ++sg_id) {
+            size_t u_start = sg_id * u_sg_num, u_end = std::min((sg_id + 1) * u_sg_num, u_num);
+            for (; u_start < u_end; ++u_start) {
+              auto u_id = shards[u_start]->get_id();
+              core_vertices[part_id][u_idx][sg_id].push_back(u_id);
+              vertex_colors[u_idx][part_id][u_id] = sg_id;
             }
           }
         }
@@ -1629,64 +1832,97 @@ int GraphTable::quick_partition_shard(int shard_graph_num,
       }));
   }
   for (size_t i = 0; i < tasks.size(); i++) tasks[i].get();
+  VLOG(0) << "Quick Partition Completed.";
 
-  tasks.clear();
-  for (int i = 0; i < feature_ptrs.size() * shard_graph_num; ++i) {
-    tasks.push_back(_shards_task_pool[i % task_pool_size_]->enqueue(
-      [&, i]() mutable -> int64_t {
-        int dst_idx = i / shard_graph_num;
-        int shard_id = i % shard_graph_num;
-        auto dst_type = id_to_feature[dst_idx];
+  // tasks.clear();
+  // for (int i = 0; i < core_features.size() * subgraph_num; ++i) {
+  //   tasks.push_back(_shards_task_pool[i % task_pool_size_]->enqueue(
+  //     [&, i]() mutable -> int64_t {
+  //       int dst_idx = i / subgraph_num;
+  //       int shard_id = i % subgraph_num;
+  //       auto dst_type = id_to_feature[dst_idx];
 
-        for (int idx = 0; idx < node_ptrs.size(); ++idx) {
-          auto node_type = paddle::string::split_string<std::string>(id_to_edge[idx << 1], "2");
-          if (node_type[node_type.size() - 1] == dst_type) {
-            VLOG(0) << i << '=' << dst_idx << "--" << shard_id << "  " << dst_type << "    " << idx << ' ' << id_to_edge[idx << 1];
-            for (int part_id = 0; part_id < shard_num; ++part_id) {
-              for (auto node : node_ptrs[idx][shard_id][part_id]) {
-                for (size_t j = 0; j < node->get_neighbor_size(); ++j) {
-                  auto vid = node->get_neighbor_id(j);
-                  auto vfeature = dynamic_cast<FeatureNode*>(find_node(1, dst_idx, vid));
-                  if (vfeature != nullptr)
-                    feature_ptrs[dst_idx][shard_id][vid % shard_num].push_back(vfeature);
-                }
-              }
-            }
-          }
-        }
-        return 0;
-      }));
-  }
-  for (size_t i = 0; i < tasks.size(); i++) tasks[i].get();
+  //       for (int idx = 0; idx < core_nodes.size(); ++idx) {
+  //         auto node_type = paddle::string::split_string<std::string>(id_to_edge[idx << 1], "2");
+  //         if (node_type[node_type.size() - 1] == dst_type) {
+  //           for (int part_id = 0; part_id < shard_num; ++part_id) {
+  //             for (auto node : core_nodes[idx][shard_id][part_id]) {
+  //               for (size_t j = 0; j < node->get_neighbor_size(); ++j) {
+  //                 auto vid = node->get_neighbor_id(j);
+  //                 auto vfeature = dynamic_cast<FeatureNode*>(find_node(1, dst_idx, vid));
+  //                 if (vfeature != nullptr)
+  //                   core_features[dst_idx][shard_id][vid % shard_num].push_back(vfeature);
+  //               }
+  //             }
+  //           }
+  //         }
+  //       }
+  //       return 0;
+  //     }));
+  // }
+  // for (size_t i = 0; i < tasks.size(); i++) tasks[i].get();
   return 0;
 }
 
-int GraphTable::do_partition_shard(int shard_graph_num,
-                                   std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
-                                   std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs,
-                                   std::vector<std::map<uint64_t, int>>& node_colors,
-                                   std::string part_method = "none") {
-  VLOG(0) << "Partition Method : " << part_method;
+int GraphTable::build_coregraph(int subgraph_num,
+                                // std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& core_nodes,
+                                // std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& core_features,
+                                std::vector<std::vector<std::vector<std::vector<uint64_t>>>>& core_vertices,
+                                std::vector<std::vector<std::map<uint64_t, int>>>& vertex_colors,
+                                std::string part_method,
+                                const std::string& subgraph_path) {
+  if (search_graphs.empty()) {
+    search_graphs.resize(id_to_feature.size());
+    for (int idx = 0; idx < id_to_edge.size(); ++idx) {
+      auto node_type = paddle::string::split_string<std::string>(id_to_edge[idx], "2");
+      int utype_id = feature_to_id[node_type[0]];
+      search_graphs[utype_id].push_back(idx);
+    }
+  }
+
+  std::vector<std::future<int64_t>> tasks;
+  for (int part_id = 0; part_id < shard_num; ++part_id) {
+  tasks.push_back(_shards_task_pool[part_id % task_pool_size_]->enqueue(
+    [&, part_id]() -> int64_t {
+      for (int e_idx = 0; e_idx < id_to_edge.size(); ++e_idx) {
+        int u_idx = get_idx(e_idx, 0);
+        auto& shards = edge_shards[e_idx][part_id]->get_bucket();
+        for (auto e_ptr : shards) {
+          auto u_id = e_ptr->get_id();
+          if (find_node(1, u_idx, u_id) == nullptr) {
+            VLOG(0) << u_id << "does not have features.";
+            feature_shards[u_idx][part_id]->add_feature_node(u_id, false);
+          }
+        }
+      }
+      return 0;
+    }));
+  }
+  for (size_t i = 0; i < tasks.size(); i++) tasks[i].get();
+
   if (part_method == "metis") {
-    metis_partition_shard(shard_graph_num, node_ptrs, feature_ptrs, node_colors);
+    // metis_partition_coregraph(subgraph_num, core_nodes, core_features, vertex_colors);
+    metis_partition_coregraph(subgraph_num, core_vertices, vertex_colors);
   }
   else {
     if (part_method == "quick") {
-      quick_partition_shard(shard_graph_num, node_ptrs, feature_ptrs, node_colors);
+      // quick_partition_coregraph(subgraph_num, core_nodes, core_features, vertex_colors);
+      quick_partition_coregraph(subgraph_num, core_vertices, vertex_colors);
     }
     else {
-      normal_partition_shard(shard_graph_num, node_ptrs, feature_ptrs);
+      // normal_partition_coregraph(subgraph_num, core_nodes, core_features);
     }
   }
-  VLOG(0) << part_method << " Partitioning finished";
+  // write_coregraph(subgraph_num, core_nodes, core_features, vertex_colors, subgraph_path);
+  write_coregraph(subgraph_num, core_vertices, vertex_colors, subgraph_path);
   return 0;
 }
 
-int GraphTable::normal_partition_shard(int shard_graph_num,
-                                       std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
-                                       std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs) {
+int GraphTable::normal_partition_coregraph(int subgraph_num,
+                                           std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& core_nodes,
+                                           std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& core_features) {
   std::vector<uint64_t> shard_graph_size;
-  shard_graph_size.resize(shard_graph_num);
+  shard_graph_size.resize(subgraph_num);
 
   for (int idx = 0; idx < id_to_edge.size(); idx += 2) {
     auto node_type = paddle::string::split_string<std::string>(id_to_edge[idx], "2");
@@ -1695,7 +1931,7 @@ int GraphTable::normal_partition_shard(int shard_graph_num,
     
     std::priority_queue<std::pair<uint64_t, int>, std::vector<std::pair<uint64_t, int>>, std::greater<std::pair<uint64_t, int>>> pri_q;
 
-    for (int i = 0; i < shard_graph_num; ++i) {
+    for (int i = 0; i < subgraph_num; ++i) {
       pri_q.push(std::make_pair(shard_graph_size[i], i));
     }
 
@@ -1708,16 +1944,16 @@ int GraphTable::normal_partition_shard(int shard_graph_num,
         pri_q.push(shard_info);
 
         uint64_t id = node->get_id();
-        node_ptrs[idx >> 1][shard_info.second][id % shard_num].push_back(dynamic_cast<GraphNode*>(node));
+        core_nodes[idx >> 1][shard_info.second][id % shard_num].push_back(dynamic_cast<GraphNode*>(node));
 
         auto feature = dynamic_cast<FeatureNode*>(find_node(1, src_idx, id));
         if (feature != nullptr) // To Check: Ignore the vertices which can not be find in the feature_shards
-          feature_ptrs[src_idx][shard_info.second][id % shard_num].push_back(feature);
+          core_features[src_idx][shard_info.second][id % shard_num].push_back(feature);
         for (size_t i = 0; i < node->get_neighbor_size(); ++i) {
           auto vid = node->get_neighbor_id(i);
           auto vfeature = dynamic_cast<FeatureNode*>(find_node(1, dst_idx, vid));
           if (vfeature != nullptr)
-            feature_ptrs[dst_idx][shard_info.second][vid % shard_num].push_back(vfeature);
+            core_features[dst_idx][shard_info.second][vid % shard_num].push_back(vfeature);
         }
       }
     }
@@ -1735,36 +1971,38 @@ int GraphTable::normal_partition_shard(int shard_graph_num,
   return 0;
 }
 
-std::string get_shard_file_path(const std::string& part_path, int shard_id, const std::string& graph_name, int part_id) {
+std::string get_subgraph_filepath(const std::string& part_path, int sg_id, const std::string& graph_name, int part_id) {
   std::string pstr = std::to_string(part_id);
   for (int i = pstr.size(); i < 5; ++i) pstr = "0" + pstr;
-  auto ret = part_path + "shard_" + std::to_string(shard_id) + + "/" + graph_name + "/part-" + pstr;
+  auto ret = part_path + "sg_" + std::to_string(sg_id) + "/" + graph_name + "/part-" + pstr;
   return ret;
 }
 
-int GraphTable::write_subgraph(int shard_graph_num,
-                               std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
-                               std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs,
-                               const std::string& part_path) {
+int GraphTable::write_coregraph(int subgraph_num,
+                                // std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& core_nodes,
+                                // std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& core_features,
+                                std::vector<std::vector<std::vector<std::vector<uint64_t>>>>& core_vertices,
+                                std::vector<std::vector<std::map<uint64_t, int>>>& vertex_colors,
+                                const std::string& subgraph_path) {
   std::vector<std::future<int64_t>> tasks;
-  VLOG(0) << "Begin : Write ShardGraph into Disk.";
+  VLOG(0) << "Begin : Write CoreGraph into Disk.";
 
-  for (int shard_id = 0; shard_id < shard_graph_num * id_to_feature.size(); ++shard_id) {
+  /*for (int shard_id = 0; shard_id < subgraph_num * id_to_feature.size(); ++shard_id) {
     tasks.push_back(_shards_task_pool[shard_id % task_pool_size_]->enqueue(
       [&, shard_id]() mutable -> int64_t {
           std::ofstream fout;
-          int idx = shard_id / shard_graph_num;
-          shard_id %= shard_graph_num;
+          int idx = shard_id / subgraph_num;
+          shard_id %= subgraph_num;
           const auto& utype = id_to_feature[idx];
           uint64_t op_sum = 0;
 
           for (int part_id = 0; part_id < shard_num; ++part_id) {
-            auto& shard_node = feature_ptrs[idx][shard_id][part_id];
+            auto& shard_node = core_features[idx][shard_id][part_id];
 
             std::sort(shard_node.begin(), shard_node.end());
             shard_node.erase(std::unique(shard_node.begin(), shard_node.end()), shard_node.end());
 
-            auto shard_file_path = get_shard_file_path(part_path, shard_id, "node_" + utype, part_id);
+            auto shard_file_path = get_subgraph_filepath(subgraph_path, shard_id, "node_" + utype, part_id);
             fout.open(shard_file_path, std::ios::binary);
             if (!fout.is_open()) {
               VLOG(0) << "open output file " << shard_file_path << " failed!";
@@ -1791,188 +2029,193 @@ int GraphTable::write_subgraph(int shard_graph_num,
   for (size_t i = 0; i < tasks.size(); i++) tasks[i].get();
   tasks.clear();
 
-  for (int shard_id = 0; shard_id < shard_graph_num * node_ptrs.size(); ++shard_id) {
+  for (int shard_id = 0; shard_id < subgraph_num * core_nodes.size(); ++shard_id) {
     tasks.push_back(_shards_task_pool[shard_id % task_pool_size_]->enqueue(
       [&, shard_id]() mutable -> int64_t {
-        int idx = shard_id / shard_graph_num;
-        shard_id %= shard_graph_num;
-        uint64_t v_sum = 0, e_sum = 0, inv_v_sum = 0, inv_e_sum = 0;
-        std::map<uint64_t, std::vector<uint64_t>> inv_csr;
+        int idx = shard_id / subgraph_num;
+        shard_id %= subgraph_num;
+        uint64_t v_sum = 0, e_sum = 0; // inv_v_sum = 0, inv_e_sum = 0;
+        // std::map<uint64_t, std::vector<uint64_t>> inv_csr;
 
         for (int part_id = 0; part_id < shard_num; ++part_id) {
           std::ofstream fout;
-          auto shard_file_path = get_shard_file_path(part_path, shard_id, id_to_edge[idx << 1], part_id);
+          auto shard_file_path = get_subgraph_filepath(subgraph_path, shard_id, id_to_edge[idx << 1], part_id);
           fout.open(shard_file_path, std::ios::binary);
           if (!fout.is_open()) {
             VLOG(0) << "open output file " << shard_file_path << " failed!";
           }
 
-          for (auto node : node_ptrs[idx][shard_id][part_id]) {
+          for (auto node : core_nodes[idx][shard_id][part_id]) {
             auto u = node->get_id();
             ++v_sum;
             fout.write((char*)(&u), sizeof(uint64_t));
             auto deg = node->get_neighbor_size();
-            fout.write((char*)(&deg), sizeof(uint64_t));
+            uint64_t sg_deg = 0;
             for (size_t k = 0; k < deg; ++k) {
-              auto v = node->get_neighbor_id(k);
-              // float w = node->get_neighbor_weight(k);
-              fout.write((char*)(&v), sizeof(uint64_t));
-              // fout.write((char*)(&w), sizeof(float)); // TODO : Optimize the Weight     
-              inv_csr[v].push_back(u);
-              ++e_sum;
+              auto v_id = node->get_neighbor_id(k);
+              if (vertex_colors[idx][v_id % shard_num][v_id] == shard_id) ++sg_deg;
+            }
+            fout.write((char*)(&sg_deg), sizeof(uint64_t));
+            for (size_t k = 0; k < deg; ++k) {
+              auto v_id = node->get_neighbor_id(k);
+              if (vertex_colors[idx][v_id % shard_num][v_id] == shard_id) {
+                // float w = node->get_neighbor_weight(k);
+                fout.write((char*)(&v_id), sizeof(uint64_t));
+                // fout.write((char*)(&w), sizeof(float)); // TODO : Optimize the Weight     
+                // inv_csr[v].push_back(u);
+                ++e_sum;
+              }
             }
           }
           fout.close();
         }
 
-        std::ofstream *fouts = new std::ofstream[shard_num];
-        for (int part_id = 0; part_id < shard_num; ++part_id) {
-          auto shard_file_path = get_shard_file_path(part_path, shard_id, id_to_edge[(idx << 1) | 1], part_id);
-          fouts[part_id].open(shard_file_path, std::ios::binary);
-          if (!fouts[part_id].is_open()) {
-            VLOG(0) << "open output file " << shard_file_path << " failed!";
-          }
-        }
-
-        for (auto v_csr : inv_csr) {
-          auto v = v_csr.first;
-          auto& fout = fouts[v % shard_num];
-          fout.write((char*)(&v), sizeof(uint64_t));
-          auto deg = v_csr.second.size();
-          fout.write((char*)(&deg), sizeof(uint64_t));
-          for (auto u : v_csr.second) {
-            fout.write((char*)(&u), sizeof(uint64_t));
-            ++inv_e_sum;
-          }
-          ++inv_v_sum;
-        }
-
-        for (int part_id = 0; part_id < shard_num; ++part_id)
-          fouts[part_id].close();
-
-        VLOG(0) << "shard_" << shard_id << " " << id_to_edge[idx << 1] << " sum_vertex = " << v_sum << "/" << inv_v_sum << ", sum_edge = " << e_sum << "/" << inv_e_sum;
+        // std::ofstream *fouts = new std::ofstream[shard_num];
+        // for (int part_id = 0; part_id < shard_num; ++part_id) {
+        //   auto shard_file_path = get_subgraph_filepath(part_path, shard_id, id_to_edge[(idx << 1) | 1], part_id);
+        //   fouts[part_id].open(shard_file_path, std::ios::binary);
+        //   if (!fouts[part_id].is_open()) {
+        //     VLOG(0) << "open output file " << shard_file_path << " failed!";
+        //   }
+        // }
+        // for (auto v_csr : inv_csr) {
+        //   auto v = v_csr.first;
+        //   auto& fout = fouts[v % shard_num];
+        //   fout.write((char*)(&v), sizeof(uint64_t));
+        //   auto deg = v_csr.second.size();
+        //   fout.write((char*)(&deg), sizeof(uint64_t));
+        //   for (auto u : v_csr.second) {
+        //     fout.write((char*)(&u), sizeof(uint64_t));
+        //     ++inv_e_sum;
+        //   }
+        //   ++inv_v_sum;
+        // }
+        // for (int part_id = 0; part_id < shard_num; ++part_id)
+        //   fouts[part_id].close();
+        // VLOG(0) << "shard_" << shard_id << " " << id_to_edge[idx << 1] << " sum_vertex = " << v_sum << "/" << inv_v_sum << ", sum_edge = " << e_sum << "/" << inv_e_sum;
+        VLOG(0) << "shard_" << shard_id << " " << id_to_edge[idx << 1] << " sum_vertex = " << v_sum << ", sum_edge = " << e_sum;
       return 0;
     }));
   }
+  for (size_t i = 0; i < tasks.size(); i++) tasks[i].get();
+  tasks.clear();
+  */
+  
+  
+  std::vector<std::vector<std::vector<uint64_t>>> part_v_cnt(shard_num);
+  std::vector<std::vector<std::vector<uint64_t>>> part_e_cnt(shard_num);
 
+  for (int part_id = 0; part_id < shard_num; ++part_id) {
+    tasks.push_back(_shards_task_pool[part_id % task_pool_size_]->enqueue(
+      [&, part_id]() mutable -> int64_t {
+        part_v_cnt[part_id].resize(id_to_feature.size());
+        part_e_cnt[part_id].resize(id_to_edge.size());
+
+        for (int i = 0; i < id_to_feature.size(); ++i)
+          part_v_cnt[part_id][i].resize(subgraph_num);
+        for (int i = 0; i < id_to_edge.size(); ++i)
+          part_e_cnt[part_id][i].resize(subgraph_num);
+
+        for (int u_idx = 0; u_idx < id_to_feature.size(); ++u_idx) {
+          for (int sg_id = 0; sg_id < subgraph_num; ++sg_id) {
+            std::ofstream *fout_e = new std::ofstream[id_to_edge.size()];
+            for (int e_idx = 0; e_idx < id_to_edge.size(); ++e_idx) {
+              std::string sg_e_path = get_subgraph_filepath(subgraph_path, sg_id, id_to_edge[e_idx], part_id);
+              fout_e[e_idx].open(sg_e_path, std::ios::binary | std::ios::out | std::ios::app);
+              if (!fout_e[e_idx].is_open()) {
+                VLOG(0) << "open output file " << sg_e_path << " failed!";
+              }
+            }
+
+            std::string sg_v_path = get_subgraph_filepath(subgraph_path, sg_id, "node_" + id_to_feature[u_idx], part_id);
+            std::ofstream fout_v;
+            fout_v.open(sg_v_path, std::ios::binary | std::ios::out);
+            if (!fout_v.is_open()) {
+              VLOG(0) << "open output file " << sg_v_path << " failed!";
+            }
+              
+            for (auto u_id : core_vertices[part_id][u_idx][sg_id]) {
+              auto f_ptr = find_node(1, u_idx, u_id);
+              
+              if (f_ptr != nullptr) {
+                std::vector<uint64_t> feature_ids;
+                f_ptr->get_feature_ids(&feature_ids);
+                fout_v.write((char*)(&u_id), sizeof(uint64_t));
+                for (auto feature_id : feature_ids)
+                  fout_v.write((char*)(&feature_id), sizeof(uint64_t));
+                part_v_cnt[part_id][u_idx][sg_id]++;
+              }
+
+              for (auto e_idx : search_graphs[u_idx]) {
+                auto e_ptr = find_node(0, e_idx, u_id);
+                if (e_ptr != nullptr) {
+                  int v_idx = get_idx(e_idx, 1);
+                  auto deg = e_ptr->get_neighbor_size();
+                  std::vector<uint64_t> sg_ngb;
+                  for (uint64_t ngb_id = 0; ngb_id < deg; ++ngb_id) {
+                    auto v_id = e_ptr->get_neighbor_id(ngb_id);
+                    if (sg_id == vertex_colors[v_idx][v_id % shard_num][v_id])
+                      sg_ngb.push_back(v_id);
+                  }
+
+                  uint64_t ngb_num = sg_ngb.size();
+                  fout_e[e_idx].write((char*)(&u_id), sizeof(uint64_t));
+                  fout_e[e_idx].write((char*)(&ngb_num), sizeof(uint64_t));
+                  for (auto v_id : sg_ngb)
+                    fout_e[e_idx].write((char*)(&v_id), sizeof(uint64_t));
+                  
+                  part_e_cnt[part_id][e_idx][sg_id] += ngb_num;
+                }
+              }
+            }
+
+            for (int e_idx = 0; e_idx < id_to_edge.size(); ++e_idx) {
+              if (fout_e[e_idx].is_open())
+                fout_e[e_idx].close();
+            }
+            delete[] fout_e;
+          }
+        }
+        return 0;
+      }));
+  }
   for (size_t i = 0; i < tasks.size(); i++) tasks[i].get();
   
-  // tasks.clear();
-  // std::vector<std::vector<std::vector<uint64_t>>> part_v_cnt(shard_num);
-  // std::vector<std::vector<std::vector<uint64_t>>> part_e_cnt(shard_num);
-  // std::vector<std::vector<std::vector<uint64_t>>> part_f_cnt(shard_num);
+  for (int idx = 0; idx < id_to_feature.size(); ++idx) {
+    for (int sg_id = 0; sg_id < subgraph_num; ++sg_id) {
+      uint64_t v_sum = 0;
+      for (int part_id = 0; part_id < shard_num; ++part_id) {
+        v_sum += part_v_cnt[part_id][idx][sg_id];
+      }
+      VLOG(0) << id_to_feature[idx] << " in coregraph_" << sg_id << " : " << v_sum << " vertices";
+    }
+  }
 
-  // for (int part_id = 0; part_id < shard_num; ++part_id) {
-  //   tasks.push_back(_shards_task_pool[part_id % task_pool_size_]->enqueue(
-  //     [=]() mutable -> int64_t {
-  //       part_v_cnt[part_id].resize(shard_graph_num);
-  //       part_e_cnt[part_id].resize(shard_graph_num);
-  //       part_f_cnt[part_id].resize(shard_graph_num);
+  for (int idx = 0; idx < id_to_edge.size(); ++idx) {
+    for (int sg_id = 0; sg_id < subgraph_num; ++sg_id) {
+      uint64_t e_sum = 0;
+      for (int part_id = 0; part_id < shard_num; ++part_id) {
+        e_sum += part_e_cnt[part_id][idx][sg_id];
+      }
+      VLOG(0) << id_to_edge[idx] << " in coregraph_" << sg_id << " : " << e_sum << " edges";
+    }
+  }
 
-  //       for (int shard_id = 0; shard_id < shard_graph_num; ++shard_id) {
-  //         part_v_cnt[part_id][shard_id].resize(node_ptrs.size());
-  //         part_e_cnt[part_id][shard_id].resize(node_ptrs.size());
-  //         part_f_cnt[part_id][shard_id].resize(feature_ptrs.size());
-
-  //         for (int idx = 0; idx < feature_ptrs.size(); ++idx) {
-  //           std::ofstream fout;
-  //           const auto& utype = id_to_feature[idx];
-  //           uint64_t op_sum = 0;
-              
-  //           auto& shard_node = feature_ptrs[idx][shard_id][part_id];
-  //           std::sort(shard_node.begin(), shard_node.end());
-  //           shard_node.erase(std::unique(shard_node.begin(), shard_node.end()), shard_node.end());
-  //           std::string shard_file_path = get_shard_file_path(part_path, shard_id, "node_" + utype, part_id);
-  //           fout.open(shard_file_path, std::ios::binary);
-  //           if (!fout.is_open()) {
-  //             VLOG(0) << "open output file " << shard_file_path << " failed!";
-  //           }
-  //           for (auto node : shard_node) {
-  //             auto uid = node->get_id();
-        
-  //             std::vector<uint64_t> feature_ids;
-  //             node->get_feature_ids(&feature_ids);
-
-  //             fout.write((char*)(&uid), sizeof(uint64_t));
-  //             for (auto feature_id : feature_ids)
-  //               fout.write((char*)(&feature_id), sizeof(uint64_t));
-  //             ++op_sum;
-  //           }
-  //           fout.close();
-  //           part_f_cnt[part_id][shard_id].push_back(op_sum);
-  //         }
-
-  //         for (int idx = 0; idx < node_ptrs.size(); ++idx) {
-  //           std::ofstream fout;
-  //           uint64_t v_sum = 0, e_sum = 0;
-  //           std::string shard_file_path = get_shard_file_path(part_path, shard_id, id_to_edge[idx << 1], part_id);
-  //           fout.open(shard_file_path, std::ios::binary);
-  //           if (!fout.is_open()) {
-  //             VLOG(0) << "open output file " << shard_file_path << " failed!";
-  //           }
-  //           for (auto node : node_ptrs[idx][shard_id][part_id]) {
-  //             auto u = node->get_id();
-  //             ++v_sum;
-  //             fout.write((char*)(&u), sizeof(uint64_t));
-  //             auto deg = node->get_neighbor_size();
-  //             fout.write((char*)(&deg), sizeof(uint64_t));
-  //             for (size_t k = 0; k < deg; ++k) {
-  //               auto v = node->get_neighbor_id(k);
-  //               // float w = node->get_neighbor_weight(k);
-  //               fout.write((char*)(&v), sizeof(uint64_t));
-  //               // fout.write((char*)(&w), sizeof(float)); // TODO : Optimize the Weight
-  //               ++e_sum;
-  //             }
-  //           }
-  //           fout.close();
-
-  //           part_v_cnt[part_id][shard_id].push_back(v_sum);
-  //           part_e_cnt[part_id][shard_id].push_back(e_sum);
-  //         }
-  //       }
-  //       return 0;
-  //     }));
-  // }
-  
-  // for (size_t i = 0; i < tasks.size(); i++) tasks[i].get();
-  
-  // for (int idx = 0; idx < feature_ptrs.size(); ++idx) {
-  //   for (int shard_id = 0; shard_id < shard_graph_num; ++shard_id) {
-  //     uint64_t op_f = 0;
-  //     for (int part_id = 0; part_id < shard_num; ++part_id) {
-  //       op_f += part_f_cnt[part_id][shard_id][idx];
-  //     }
-  //     VLOG(0) << id_to_feature[idx] << " shard_" << shard_id << " : " << op_f << " features";
-  //   }
-  // }
-
-  // for (int idx = 0; idx < feature_ptrs.size(); ++idx) {
-  //   for (int shard_id = 0; shard_id < shard_graph_num; ++shard_id) {
-  //     uint64_t op_e = 0, op_v = 0;
-  //     for (int part_id = 0; part_id < shard_num; ++part_id) {
-  //       op_e += part_f_cnt[part_id][shard_id][idx];
-  //       op_v += part_v_cnt[part_id][shard_id][idx];
-  //     }
-  //     VLOG(0) << id_to_edge[idx] << " shard_" << shard_id << " : " << op_v << " vertices, " << op_e << " edges";
-  //   }
-  // }
-
-  std::ofstream fout(part_path + "ginfo");
+  std::ofstream fout(subgraph_path + "ginfo");
   for (auto node_info : feature_to_id) {
-    fout << node_info.first;
-    auto type_id = node_info.second;
-    for (auto shard : feature_shards[type_id]) {
+    auto u_name = node_info.first;
+    auto u_idx = node_info.second;
+    for (auto shard : feature_shards[u_idx]) {
       auto tmp_bucket = shard->get_bucket();
-      if (!tmp_bucket.empty()) {
+      if (!tmp_bucket.empty()) { 
         auto tmp_node = tmp_bucket[0];
         std::vector<uint64_t> feature_ids;
         std::vector<std::string> valid_feature_name;
-        
         for (int i = 0; i < tmp_node->get_feature_size(); ++i) {
           feature_ids.clear();
           tmp_node->get_feature_ids(i, &feature_ids);
           if (!feature_ids.empty()) {
-            for (auto it : feat_id_map[type_id]) {
+            for (auto it : feat_id_map[u_idx]) {
               if (it.second == i) {
                 valid_feature_name.push_back(it.first);
                 break;
@@ -1980,98 +2223,356 @@ int GraphTable::write_subgraph(int shard_graph_num,
             }
           }
         }
-
-        fout << '\t' << valid_feature_name.size();
+        fout << u_name << '\t' << valid_feature_name.size();
         for (auto vfn : valid_feature_name) fout << '\t' << vfn;
+        fout << std::endl;
         break;
       }
+      else VLOG(0) << "Nodetype " << u_name << " does not exist.";
     }
-    fout << std::endl;
   }
   fout.close();
-  VLOG(0) << "Finish : Write ShardGraph into Disk.";
+  VLOG(0) << "Finish : Write CoreGraph into Disk.";
   return 0;
 }
 
-int GraphTable::filter_vertex(int shard_graph_num,
-                              std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
-                              std::vector<std::map<uint64_t, int>>& node_colors) {
-  // std::vector<std::future<int64_t>> tasks;
+int GraphTable::get_idx(int e_idx, int uv_pos) {
+  auto u2v = paddle::string::split_string<std::string>(id_to_edge[e_idx], "2");
+  return feature_to_id[u2v[uv_pos]];
+}
 
-  // // const int NGB_T = 5;
-  // // const double YITA_T = 0.4;
+int GraphTable::build_halograph(const int subgraph_num,
+                                const int layer_num,
+                                std::vector<std::vector<std::vector<std::vector<uint64_t>>>>& core_vertices,
+                                std::vector<std::vector<std::map<uint64_t, int>>>& vertex_colors, 
+                                const std::string& subgraph_path) {
+  std::vector<std::future<int64_t>> tasks;
+  struct HaloVertex {
+    std::vector<uint64_t> color_cnt, color_deg, color_sum;
+    std::vector<int> color_dist;
+    std::vector<double> color_weight;
+
+    HaloVertex(int subgraph_num) {
+      color_cnt.clear();
+      color_cnt.resize(subgraph_num);
+      color_deg.clear();
+      color_deg.resize(subgraph_num);
+      color_sum.clear();
+      color_sum.resize(subgraph_num);
+      color_dist.clear();
+      color_dist.resize(subgraph_num);
+      color_weight.clear();
+      color_weight.resize(subgraph_num);
+    }
+
+    // void print_dist(void) {
+    //   for (auto i : color_dist) std::cout << i << " ";
+    //   std::cout << std::endl;
+    // }
+
+    inline void set_dist(int color, int dist) {
+      if (color_dist[color] == 0) {
+        color_dist[color] = dist;
+      }
+    }
+
+    inline void add_cnt(int color) {
+      ++color_cnt[color];
+    }
+
+    inline void add_halo_cnt(HaloVertex *ptr, int color) {
+      for (int color_id = 0; color_id < color_dist.size(); ++color_id) {
+        if (ptr->color_dist[color_id] != 0) ++color_cnt[color_id];
+      }
+      ++color_cnt[color];
+    }
+
+    void aggregate_sum(int layer, int color, HaloVertex *ptr) {
+      if (layer == 1) {
+        color_sum[color] += ptr->color_cnt[color];
+        ++color_deg[color];
+      }
+      else {
+        color_sum[color] += ptr->color_weight[color];
+      }
+    }
+
+    void aggregate_cal(double layer_weight) {
+      for (int i = 0; i < color_weight.size(); ++i) {
+        if (color_dist[i])
+          color_weight[i] = 1.0 * color_sum[i] / color_deg[i] + layer_weight * color_cnt[i];
+        color_sum[i] = 0;
+      }
+    }
+  };
+
+  std::vector<std::vector<std::map<uint64_t, HaloVertex*>>> halo_vertices;
+  halo_vertices.resize(shard_num);
+  std::vector<std::vector<double>> part_max;
+  part_max.resize(shard_num);
+
+  VLOG(0) << "Begin : Build HaloGraph";
+  // Build HaloGraph : HaloDeg + NGB for NS
+  for (int part_id = 0; part_id < shard_num; ++part_id) {
+    tasks.push_back(_shards_task_pool[part_id % task_pool_size_]->enqueue(
+      [&, part_id]() -> int64_t {
+        halo_vertices[part_id].resize(id_to_feature.size());
+        part_max[part_id].resize(subgraph_num);
+        for (int u_idx = 0; u_idx < id_to_edge.size(); ++u_idx) {
+          for (int sg_id = 0; sg_id < subgraph_num; ++sg_id) {
+            HaloVertex* hv_ptr = new HaloVertex(subgraph_num);
+            for (auto u_id : core_vertices[part_id][u_idx][sg_id]) {
+              std::set<std::pair<int, uint64_t>> visited;
+              std::deque<std::pair<int, uint64_t>> frontier;
+              auto u = std::make_pair(u_idx, u_id);
+              visited.insert(u);
+              frontier.push_back(u);
+              uint64_t frontier_size = 1;
+              int u_color = vertex_colors[u_idx][part_id][u_id];
+              
+              for (int layer_dist = 1; layer_dist <= layer_num; ++layer_dist) {
+                while (frontier_size--) {
+                  auto v = frontier.front();
+                  frontier.pop_front();
+
+                  int v_idx = v.first;
+                  uint64_t v_id  = v.second;
+                  for (auto e_idx : search_graphs[v_idx]) {
+                    auto v_ptr = find_node(0, e_idx, v_id);  
+                    auto deg = v_ptr->get_neighbor_size();
+                    int x_idx = get_idx(e_idx, 1);
+
+                    for (uint64_t ngb_id = 0; ngb_id < deg; ++ngb_id) {
+                      auto x_id = v_ptr->get_neighbor_id(ngb_id);
+                      auto x = std::make_pair(x_idx, x_id);
+                      if (visited.find(x) == visited.end()) {
+                        visited.insert(x);
+                        frontier.push_back(x);
+                        int x_color = vertex_colors[x_idx][x_id % shard_num][x_id];
+                        if (x_color != sg_id) {
+                          hv_ptr->set_dist(x_color, layer_dist);
+                        }
+                      }
+                    }
+                  }
+                }
+                frontier_size = frontier.size();
+              }
+              halo_vertices[part_id][u_idx][u_id] = hv_ptr;
+            }
+          }
+        }
+        return 0;
+      }));
+  }
+  for (size_t i = 0; i < tasks.size(); i++) tasks[i].get();
   
-  // for (int part_id = 0; part_id < shard_num; ++part_id) {
-  //   tasks.push_back(_shards_task_pool[part_id % task_pool_size_]->enqueue(
-  //     [&, part_id]() mutable -> int64_t {
-  //       for (int idx = 0; idx < node_ptrs.size(); ++idx) {
-  //         for (int sg_id = 0; sg_id < shard_graph_num; ++sg_id) {
-  //           for (auto ptr : node_ptrs[idx][sg_id][part_id]) {
-  //             // uint64_t tot_ngb_num = ptr->get_neighbor_size();
-  //             // uint64_t out_ngb_num = 0;
-  //             // auto uid = ptr->get_id();
-  //             // int u_color = node_colors[idx][uid];
-  //             // for (int i = 0; i < out_ngb_num; ++i) {
-  //             //   auto v_id = ptr->get_neighbor_id(i);
-  //             //   out_ngb_num += node_colors[idx][v_id] != u_color;
-  //             // }
-  //             // if (tot_ngb_num > NGB_T && 1.0 * out_ngb_num / tot_ngb_num >= YITA_T) {
-  //             //   out_node_ptrs[idx].push_back(ptr);
-  //             // }
-  //             auto uid = ptr->get_id();
-  //             uint64_t ngb_num = ptr->get_neighbor_size();
-  //             int color = node_colors[uid % shard_num][u_id];
-  //             for (int i = 0; i < ngb_num; ++i) {
-  //               auto v_id = ptr->get_neighbor_id(i);
-  //               if (node_colors[v_id % shard_num][v_id] == color) {
+  tasks.clear();
+  for (int part_id = 0; part_id < shard_num; ++part_id) {
+    tasks.push_back(_shards_task_pool[part_id % task_pool_size_]->enqueue(
+      [&, part_id]() mutable -> int64_t {
+        for (int layer = 1; layer <= layer_num; ++layer) {
+          const double layer_weight = 1.0 * layer / layer_num;
+          for (int u_idx = 0; u_idx < id_to_feature.size(); ++u_idx) {
+            for (auto halo_pair : halo_vertices[part_id][u_idx]) {
+              auto u_id = halo_pair.first;
+              auto halo_ptr = halo_pair.second;
+              for (auto e_idx : search_graphs[u_idx]) {
+                auto u_ptr = find_node(0, e_idx, u_id);
+                if (u_ptr != nullptr) {
+                  auto deg = u_ptr->get_neighbor_size();
+                  int v_idx = get_idx(e_idx, 1);
 
-  //               }
-  //             }
-  //           }
-  //         }
-  //       }
-  //       return 0;
-  //     }));
-  // }
+                  if (layer == 1) {
+                    for (uint64_t ngb_id = 0; ngb_id < deg; ++ngb_id) {
+                      auto v_id = u_ptr->get_neighbor_id(ngb_id);
+                      halo_ptr->add_halo_cnt(halo_vertices[v_id % shard_num][v_idx][v_id], vertex_colors[v_idx][v_id % shard_num][v_id]);
+                    }
+                  }
+                  for (uint64_t ngb_id = 0; ngb_id < deg; ++ngb_id) {
+                    auto v_id = u_ptr->get_neighbor_id(ngb_id);
+                    halo_ptr->aggregate_sum(layer, vertex_colors[v_idx][v_id % shard_num][v_id], halo_vertices[v_id % shard_num][v_idx][v_id]);
+                  }
+                }
+              }
+            }
+          }
+          for (int u_idx = 0; u_idx < id_to_feature.size(); ++u_idx) {
+            for (auto halo_pair : halo_vertices[part_id][u_idx]) {
+              auto halo_ptr = halo_pair.second;
+              halo_ptr->aggregate_cal(layer_num);
+            }
+          }
+          if (layer == layer_num) {
+            for (int u_idx = 0; u_idx < id_to_feature.size(); ++u_idx) {
+              for (auto halo_pair : halo_vertices[part_id][u_idx]) {
+                auto halo_ptr = halo_pair.second;
+                for (int sg_id = 0; sg_id < subgraph_num; ++sg_id) {
+                  if (halo_ptr->color_dist[sg_id]) {
+                    part_max[part_id][sg_id] = std::max(part_max[part_id][sg_id], halo_ptr->color_weight[sg_id]);
+                  }
+                }
+              }
+            }
+          }
+        }
+        return 0;
+      }));
+  }
+  for (size_t i = 0; i < tasks.size(); i++) tasks[i].get();
+  VLOG(0) << "Finish : Build HaloGraph";
 
+  std::vector<double> halo_max(subgraph_num, -1);
+  for (int part_id = 0; part_id < shard_num; ++part_id) {
+    for (int sg_id = 0; sg_id < subgraph_num; ++sg_id) {
+      if (halo_max[sg_id] < 0 || part_max[part_id][sg_id] > halo_max[sg_id])
+        halo_max[sg_id] = part_max[part_id][sg_id];
+    }
+  }
+
+  std::vector<std::vector<uint64_t>> part_v_cnt(shard_num);
+  std::vector<std::vector<uint64_t>> part_e_cnt(shard_num);
+  tasks.clear();
+  VLOG(0) << "Begin : Write HaloGraph into Disk.";
+  for (int part_id = 0; part_id < shard_num; ++part_id) {
+    tasks.push_back(_shards_task_pool[part_id % task_pool_size_]->enqueue(
+      [&, part_id]() mutable -> int64_t {
+        part_v_cnt[part_id].resize(subgraph_num);
+        part_e_cnt[part_id].resize(subgraph_num);
+        std::ofstream *fouts = new std::ofstream[subgraph_num];
+        for (int sg_id = 0; sg_id < subgraph_num; ++sg_id) {
+          std::string halo_path = subgraph_path + "sg_" + std::to_string(sg_id) + "/halo/hg-" + std::to_string(part_id);
+          fouts[sg_id].open(halo_path, std::ios::out | std::ios::binary);
+          if (!fouts[sg_id].is_open()) {
+            VLOG(0) << "open file " << halo_path << "failed";
+          }
+        }
+
+        for (int u_idx = 0; u_idx < id_to_feature.size(); ++u_idx) {
+          for (auto halo_pair : halo_vertices[part_id][u_idx]) {
+            auto u_id = halo_pair.first;
+            auto halo_ptr = halo_pair.second;
+            for (int sg_id = 0; sg_id < subgraph_num; ++sg_id) {
+              // if (part_id == 0) {
+              //   std::cout << u_id << ' ';
+              //   halo_ptr->print_dist();
+              // }
+              if (halo_ptr->color_dist[sg_id] != 0) {
+                part_v_cnt[part_id][sg_id]++;
+                fouts[sg_id].write((char*)(&u_id), sizeof(uint64_t));
+                fouts[sg_id].write((char*)(&u_idx), sizeof(int));
+                double op_w = halo_ptr->color_weight[sg_id] / halo_max[sg_id];
+                fouts[sg_id].write((char*)(&halo_ptr->color_dist[sg_id]), sizeof(int));
+                fouts[sg_id].write((char*)(&op_w), sizeof(double));
+
+                for (auto e_idx : search_graphs[u_idx]) {
+                  auto u_ptr = find_node(0, e_idx, u_id);
+                  if (u_ptr != nullptr) {
+                    int v_idx = get_idx(e_idx, 1);
+                    auto deg = u_ptr->get_neighbor_size();
+                    std::vector<uint64_t> sg_ngb;
+                    for (uint64_t ngb_id = 0; ngb_id < deg; ++ngb_id) {
+                      auto v_id = u_ptr->get_neighbor_id(ngb_id);
+                      if (sg_id == vertex_colors[v_idx][v_id % shard_num][v_id] || halo_vertices[v_id % shard_num][v_idx][v_id]->color_dist[sg_id] != 0)
+                        sg_ngb.push_back(v_id);
+                    }
+                    uint64_t ngb_num = sg_ngb.size();
+                    fouts[sg_id].write((char*)(&ngb_num), sizeof(uint64_t));
+                    for (auto v_id : sg_ngb)
+                      fouts[sg_id].write((char*)(&v_id), sizeof(uint64_t));
+                    part_e_cnt[part_id][sg_id] += ngb_num;
+                  }
+                }
+
+                auto f_ptr = find_node(1, u_idx, u_id);
+                std::vector<uint64_t> feature_ids;
+                f_ptr->get_feature_ids(&feature_ids);
+                for (auto feature_id : feature_ids)
+                  fouts[sg_id].write((char*)(&feature_id), sizeof(uint64_t));
+              }
+            }
+          }
+        }
+
+        for (int sg_id = 0; sg_id < subgraph_num; ++sg_id) {
+          if (fouts[sg_id].is_open()) {
+            fouts[sg_id].close();
+          }
+        }
+        delete[] fouts;
+        return 0;
+      }));
+  }
+  for (size_t i = 0; i < tasks.size(); i++) tasks[i].get();
+
+  for (int sg_id = 0; sg_id < subgraph_num; ++sg_id) {
+    uint64_t v_sum = 0;
+    for (int part_id = 0; part_id < shard_num; ++part_id) {
+      v_sum += part_v_cnt[part_id][sg_id];
+    }
+    VLOG(0) << "halograph_" << sg_id << " : " << v_sum << " vertices";
+  }
+
+  for (int sg_id = 0; sg_id < subgraph_num; ++sg_id) {
+    uint64_t e_sum = 0;
+    for (int part_id = 0; part_id < shard_num; ++part_id) {
+      e_sum += part_e_cnt[part_id][sg_id];
+    }
+    VLOG(0) << "halograph_" << sg_id << " : " << e_sum << " edges";
+  }
+
+  VLOG(0) << "Finish : Write HaloGraph into Disk.";
   return 0;
 }
 
-int32_t GraphTable::partition_shard_file(int shard_graph_num,
-                                         const std::string& part_path, 
-                                         std::string part_method="normal") {
+int32_t GraphTable::build_subgraph_file(int subgraph_num,
+                                        int layer_num,
+                                        const std::string& subgraph_path, 
+                                        std::string part_method,
+                                        bool build_halo) {
   std::vector<std::future<int64_t>> tasks;
 
-  std::vector<std::vector<std::vector<std::vector<GraphNode*>>>> node_ptrs;
-  std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>> feature_ptrs;
-  std::vector<std::map<uint64_t, int>> node_colors;
+  // std::vector<std::vector<std::vector<std::vector<GraphNode*>>>> core_vertices;
+  // std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>> core_features;
+  std::vector<std::vector<std::vector<std::vector<uint64_t>>>> core_vertices;
+  std::vector<std::vector<std::map<uint64_t, int>>> vertex_colors;
 
-  node_ptrs.resize(id_to_edge.size() / 2);
-  for (int i = 0; i < (id_to_edge.size() / 2); ++i) {
-    node_ptrs[i].resize(shard_graph_num);
-    for (int j = 0; j < shard_graph_num; ++j)
-      node_ptrs[i][j].resize(shard_num);
+  // core_vertices.resize(id_to_edge.size());
+  // for (int i = 0; i < (id_to_edge.size()); ++i) {
+  //   core_vertices[i].resize(subgraph_num);
+  //   for (int j = 0; j < subgraph_num; ++j)
+  //     core_vertices[i][j].resize(shard_num);
+  // }
+
+  // core_features.resize(id_to_feature.size());
+  // for (int i = 0; i < id_to_feature.size(); ++i) {
+  //   core_features[i].resize(subgraph_num);
+  //   for (int j = 0; j < subgraph_num; ++j)
+  //     core_features[i][j].resize(shard_num);
+  // }
+
+  core_vertices.resize(shard_num);
+  for (int i = 0; i < shard_num; ++i) {
+    core_vertices[i].resize(id_to_feature.size());
+    for (int j = 0; j < id_to_feature.size(); ++j)
+      core_vertices[i][j].resize(subgraph_num);
   }
 
-  feature_ptrs.resize(id_to_feature.size());
-  for (int i = 0; i < id_to_feature.size(); ++i) {
-    feature_ptrs[i].resize(shard_graph_num);
-    for (int j = 0; j < shard_graph_num; ++j)
-      feature_ptrs[i][j].resize(shard_num);
+  vertex_colors.resize(id_to_feature.size());
+  for (int i = 0; i < (id_to_feature.size()); ++i) {
+    vertex_colors[i].resize(shard_num);
   }
 
-  node_colors.resize(shard_num);
-
-  do_partition_shard(shard_graph_num, node_ptrs, feature_ptrs, node_colors, part_method);
-
+  build_coregraph(subgraph_num, core_vertices, vertex_colors, part_method, subgraph_path);
+  if (build_halo)
+    build_halograph(subgraph_num, layer_num, core_vertices, vertex_colors, subgraph_path);
   // VLOG(0) << "count start.";
-
   // for (int idx = 0; idx < id_to_edge.size(); idx += 2) {
-  //   for (int shard_id = 0; shard_id < shard_graph_num; ++shard_id) {
+  //   for (int shard_id = 0; shard_id < subgraph_num; ++shard_id) {
   //     uint64_t v_sum = 0, e_sum = 0;
   //     std::map<uint64_t, bool> flag;
   //     for (int part_id = 0; part_id < shard_num; ++part_id) {
-  //       for (auto node : node_ptrs[idx >> 1][shard_id][part_id]) {
+  //       for (auto node : core_vertices[idx >> 1][shard_id][part_id]) {
   //         ++v_sum;
   //         auto deg = node->get_neighbor_size();
   //         for (size_t k = 0; k < deg; ++k) {
@@ -2084,13 +2585,10 @@ int32_t GraphTable::partition_shard_file(int shard_graph_num,
   //     VLOG(0) << idx << "-" << shard_id << "    " << v_sum << ' ' << e_sum << ' ' << flag.size();
   //   }
   // }
-
-  write_subgraph(shard_graph_num, node_ptrs, feature_ptrs, part_path);
-  // filter_vertex();
   return 0;
 }
 
-void GraphTable::clear_shard_graph_table(void) {
+void GraphTable::clear_subgraph_table(void) {
   for (int i = 0; i < (int)edge_shards.size(); i++) {
     for (size_t j = 0; j < edge_shards[i].size(); ++j) {
       edge_shards[i][j]->clear();
@@ -2251,14 +2749,14 @@ std::pair<uint64_t, uint64_t> GraphTable::parse_node_file(
   return {local_count, local_valid_count};
 }
 
-std::pair<uint64_t, uint64_t> GraphTable::parse_shard_node_file(
+std::pair<uint64_t, uint64_t> GraphTable::parse_core_node_file(
     const std::string &path, int idx) {
   std::ifstream file(path, std::ios::in | std::ios::binary | std::ios::ate);
   uint64_t local_count = 0;
   uint64_t local_valid_count = 0;
 
-  std::vector<paddle::string::str_ptr> vals;
-  auto& feature_list = shard_vertex_info[idx];
+  // std::vector<paddle::string::str_ptr> vals;
+  auto& feature_list = sg_vertex_info[idx];
 
   if (!file.is_open()) {
     VLOG(0) << "Open " << path << " Failed.";
@@ -2277,7 +2775,6 @@ std::pair<uint64_t, uint64_t> GraphTable::parse_shard_node_file(
   for (size_t offset = 0; offset < size; offset += line_size) {
     uint64_t *v_ptr = (uint64_t*)(buffer.data() + offset);
     uint64_t v_id = *v_ptr;
-    
     size_t shard_id = v_id % shard_num;
     if (shard_id >= shard_end || shard_id < shard_start) {
       VLOG(4) << "will not load " << v_id << " from " << path
@@ -2319,7 +2816,7 @@ int32_t GraphTable::load_nodes(const std::string &path, std::string node_type, i
     for (size_t i = 0; i < paths.size(); i++) {
       tasks.push_back(load_node_edge_task_pool->enqueue(
           [&, i, this]() -> std::pair<uint64_t, uint64_t> {
-            if (load_idx >= 0) return parse_shard_node_file(paths[i], load_idx);
+            if (load_idx >= 0) return parse_core_node_file(paths[i], load_idx);
             return parse_node_file(paths[i]);
           }));
     }
@@ -2349,7 +2846,7 @@ int32_t GraphTable::load_nodes(const std::string &path, std::string node_type, i
       VLOG(2) << "Begin GraphTable::load_nodes(), path[" << path << "]";
       std::pair<uint64_t, uint64_t> res;
       if (load_idx >= 0) {
-        res = parse_shard_node_file(path, load_idx);
+        res = parse_core_node_file(path, load_idx);
       }
       else res = parse_node_file(path, node_type, idx);
       count += res.first;
@@ -2432,7 +2929,7 @@ std::pair<uint64_t, uint64_t> GraphTable::parse_edge_file(
   return {local_count, local_valid_count};
 }
 
-std::pair<uint64_t, uint64_t> GraphTable::parse_shard_edge_file(
+std::pair<uint64_t, uint64_t> GraphTable::parse_core_edge_file(
     const std::string &path, int idx) {
   std::string sample_type = "random";
   bool is_weighted = false;
@@ -2514,7 +3011,7 @@ std::pair<uint64_t, uint64_t> GraphTable::parse_shard_edge_file(
 int32_t GraphTable::load_edges(const std::string &path,
                                bool reverse_edge,
                                const std::string &edge_type,
-                               int load_mode) { // 0 : normal; 1 : load shard
+                               int load_mode) { // 0 : normal; 1 : load subgraph
 #ifdef PADDLE_WITH_HETERPS
   if (search_level == 2) total_memory_cost = 0;
   const uint64_t fixed_load_edges = 1000000;
@@ -2542,7 +3039,7 @@ int32_t GraphTable::load_edges(const std::string &path,
     for (int i = 0; i < paths.size(); i++) {
       tasks.push_back(load_node_edge_task_pool->enqueue(
           [&, i, idx, this]() -> std::pair<uint64_t, uint64_t> {
-            if (load_mode == 1) return parse_shard_edge_file(paths[i], idx);
+            if (load_mode == 1) return parse_core_edge_file(paths[i], idx);
             return parse_edge_file(paths[i], idx, reverse_edge);
           }));
     }
@@ -2554,7 +3051,7 @@ int32_t GraphTable::load_edges(const std::string &path,
   } else {
     for (auto path : paths) {
       std::pair<uint64_t, uint64_t> res = {0, 0};
-      if (load_mode == 1) res = parse_shard_edge_file(path, idx);
+      if (load_mode == 1) res = parse_core_edge_file(path, idx);
       else {
         res = parse_edge_file(path, idx, reverse_edge);
       }

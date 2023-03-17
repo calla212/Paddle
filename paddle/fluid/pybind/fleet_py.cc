@@ -374,9 +374,9 @@ void BindGraphGpuWrapper(py::module* m) {
       .def("add_table_feat_conf", &GraphGpuWrapper::add_table_feat_conf)
       .def("load_edge_file", &GraphGpuWrapper::load_edge_file)
       .def("load_node_and_edge", &GraphGpuWrapper::load_node_and_edge)
-      .def("partition_shard", &GraphGpuWrapper::partition_shard)
-      .def("load_shard_graph", &GraphGpuWrapper::load_shard_graph)
-      .def("clear_shard_graph", &GraphGpuWrapper::clear_shard_graph)
+      .def("build_subgraph", &GraphGpuWrapper::build_subgraph)
+      .def("prepare_subgraph", &GraphGpuWrapper::prepare_subgraph)
+      .def("clear_subgraph", &GraphGpuWrapper::clear_subgraph)
       .def("upload_batch",
            py::overload_cast<int, int, int, const std::string&>(
                &GraphGpuWrapper::upload_batch))

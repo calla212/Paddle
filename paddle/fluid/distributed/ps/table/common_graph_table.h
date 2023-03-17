@@ -545,50 +545,70 @@ class GraphTable : public Table {
                                   int part_num,
                                   bool reverse);
 
-  int32_t partition_shard_file(int shard_num, const std::string& part_path, std::string part_method);
+  int32_t build_subgraph_file(int subgraph_num,
+                              int layer_num, 
+                              const std::string& subgraph_path, 
+                              std::string part_method,
+                              bool build_halo);
 
-  int32_t build_inv_shard_graph(int idx);
+  // int32_t build_inv_subgraph(int idx);
 
-  void clear_shard_graph_table(void);
+  void clear_subgraph_table(void);
 
-  int do_partition_shard(int shard_graph_num,
-                         std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
-                         std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs,
-                         std::vector<std::map<uint64_t, int>>& node_colors,
-                         std::string part_method);
+  int build_coregraph(int subgraph_num,
+                      // std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& core_nodes,
+                      // std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& core_features,
+                      std::vector<std::vector<std::vector<std::vector<uint64_t>>>>& core_vertices,
+                      std::vector<std::vector<std::map<uint64_t, int>>>& node_colors,
+                      std::string part_method,
+                      const std::string& subgraph_path);
   
-  int write_subgraph(int shard_graph_num,
-                     std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
-                     std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs,
-                     const std::string& part_path);
-
-  int filter_vertex(int shard_graph_num,
-                    std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
-                    std::vector<std::map<uint64_t, int>>& node_colors);
-
-  int normal_partition_shard(int shard_graph_num, 
-                             std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
-                             std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs);
-                            //  std::vector<std::map<uint64_t, int>>& node_colors);
+  int write_coregraph(int subgraph_num,
+                    //  std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& core_nodes,
+                    //  std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& core_features,
+                     std::vector<std::vector<std::vector<std::vector<uint64_t>>>>& core_vertices,
+                     std::vector<std::vector<std::map<uint64_t, int>>>& node_colors,
+                     const std::string& subgraph_path);
   
-  int metis_partition_shard(int shard_graph_num,
-                            std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
-                            std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs,
-                            std::vector<std::map<uint64_t, int>>& node_colors);
+  int build_halograph(const int subgraph_num,
+                      const int layer_num,
+                      // std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& core_nodes,
+                      std::vector<std::vector<std::vector<std::vector<uint64_t>>>>& core_vertices,
+                      std::vector<std::vector<std::map<uint64_t, int>>>& node_colors,
+                      const std::string& subgraph_path);
 
-  int quick_partition_shard(int shard_graph_num,
-                            std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& node_ptrs,
-                            std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& feature_ptrs,
-                            std::vector<std::map<uint64_t, int>>& node_colors);
-
-  int load_shard_info(const std::string& spath, int ntype_size);
+  int normal_partition_coregraph(int subgraph_num, 
+                                 std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& core_nodes,
+                                 std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& core_features);
+                                 //  std::vector<std::map<uint64_t, int>>& node_colors);
   
-  int32_t load_shard_graph_file(std::string etype2files,
-                                std::string ntype2files,
-                                std::string shard_graph_data_local_path,
-                                int shard_id,
-                                int part_num,
-                                bool reverse);
+  int metis_partition_coregraph(int subgraph_num,
+                                // std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& core_nodes,
+                                // std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& core_features,
+                                std::vector<std::vector<std::vector<std::vector<uint64_t>>>>& core_vertices,
+                                std::vector<std::vector<std::map<uint64_t, int>>>& node_colors);
+
+  int quick_partition_coregraph(int subgraph_num,
+                                // std::vector<std::vector<std::vector<std::vector<GraphNode*>>>>& core_nodes,
+                                // std::vector<std::vector<std::vector<std::vector<FeatureNode*>>>>& core_features,
+                                std::vector<std::vector<std::vector<std::vector<u_int64_t>>>>& core_vertices,
+                                std::vector<std::vector<std::map<uint64_t, int>>>& vertex_colors);
+
+  int load_subgraph_info(const std::string& spath, int ntype_size);
+  
+  int32_t prepare_train_subgraph(std::string etype2files,
+                                 std::string ntype2files,
+                                 std::string subgraph_path,
+                                 int shard_id,
+                                 int part_num,
+                                 bool reverse,
+                                 bool load_halo,
+                                 double halo_a, double halo_b, int epoch_id, int epoch_num, int layer_num);
+
+  int prepare_halograph(std::string path,
+                        double halo_a, double halo_b, int epoch_id, int epoch_num, int layer_num);
+  
+  int get_idx(int e_idx, int uv_pos);
 
   std::string get_inverse_etype(std::string &etype);
   
@@ -628,13 +648,13 @@ class GraphTable : public Table {
   std::pair<uint64_t, uint64_t> parse_edge_file(const std::string &path,
                                                 int idx,
                                                 bool reverse);
-  std::pair<uint64_t, uint64_t> parse_shard_edge_file(const std::string &path,
-                                                      int idx);
+  std::pair<uint64_t, uint64_t> parse_core_edge_file(const std::string &path,
+                                                          int idx);
   std::pair<uint64_t, uint64_t> parse_node_file(const std::string &path,
                                                 const std::string &node_type,
                                                 int idx);
   std::pair<uint64_t, uint64_t> parse_node_file(const std::string &path);
-  std::pair<uint64_t, uint64_t> parse_shard_node_file(const std::string &path, int idx);
+  std::pair<uint64_t, uint64_t> parse_core_node_file(const std::string &path, int idx);
   int32_t add_graph_node(int idx,
                          std::vector<uint64_t> &id_list,
                          std::vector<bool> &is_weight_list);
@@ -797,7 +817,8 @@ class GraphTable : public Table {
   std::string feature_separator_ = std::string(" ");
   std::vector<int> slot_feature_num_map_;
 
-  std::vector<std::vector<std::string>> shard_vertex_info;
+  std::vector<std::vector<std::string>> sg_vertex_info;
+  std::vector<std::vector<int>> search_graphs;
 };
 
 /*

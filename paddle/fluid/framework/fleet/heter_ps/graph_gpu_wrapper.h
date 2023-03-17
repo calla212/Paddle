@@ -53,16 +53,20 @@ class GraphGpuWrapper {
                           std::string graph_data_local_path,
                           int part_num,
                           bool reverse);
-  void load_shard_graph(std::string etype2files,
+  void prepare_subgraph(std::string etype2files,
                         std::string ntype2files,
-                        std::string shard_graph_data_local_path,
-                        int shard_id,
+                        std::string subgraph_path,
+                        int load_sg_id,
                         int part_num,
-                        bool reverse);
-  void partition_shard(int shard_num,
-                       std::string part_path,
-                       std::string part_method);
-  void clear_shard_graph(int etype_num, int gpu_num);
+                        bool reverse,
+                        bool load_halo,
+                        double halo_a, double halo_b, int epoch_id, int epoch_num, int layer_num);
+  void build_subgraph(int subgraph_num,
+                      int layer_num,
+                      std::string subgraph_path,
+                      std::string part_method,
+                      bool build_halo);
+  void clear_subgraph(int etype_num, int gpu_num);
   int32_t load_next_partition(int idx);
   int32_t get_partition_num(int idx);
   void load_node_weight(int type_id, int idx, std::string path);

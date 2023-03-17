@@ -173,26 +173,28 @@ void GraphGpuWrapper::load_node_and_edge(std::string etype2files,
           etype2files, ntype2files, graph_data_local_path, part_num, reverse);
 }
 
-void GraphGpuWrapper::load_shard_graph(std::string etype2files,
+void GraphGpuWrapper::prepare_subgraph(std::string etype2files,
                                        std::string ntype2files,
-                                       std::string shard_graph_data_local_path,
-                                       int shard_id,
+                                       std::string subgraph_path,
+                                       int load_sg_id,
                                        int part_num,
-                                       bool reverse) {
+                                       bool reverse,
+                                       bool load_halo=false,
+                                       double halo_a=0.0, double halo_b=0.0, int epoch_id=-1, int epoch_num=-1, int layer_num=-1) {
   ((GpuPsGraphTable *)graph_table)
-      ->cpu_graph_table_->load_shard_graph_file(
-          etype2files, ntype2files, shard_graph_data_local_path, shard_id, part_num, reverse);
+      ->cpu_graph_table_->prepare_train_subgraph(
+          etype2files, ntype2files, subgraph_path, load_sg_id, part_num, reverse, load_halo, halo_a, halo_b, epoch_id, epoch_num, layer_num);
 }
 
-void GraphGpuWrapper::partition_shard(int shard_num, std::string part_path, std::string part_method) {
+void GraphGpuWrapper::build_subgraph(int subgraph_num, int layer_num, std::string subgraph_path, std::string part_method, bool build_halo) {
   if (part_method == "") part_method = "normal";
   ((GpuPsGraphTable *)graph_table)
-      ->cpu_graph_table_->partition_shard_file(shard_num, part_path, part_method);
+      ->cpu_graph_table_->build_subgraph_file(subgraph_num, layer_num, subgraph_path, part_method, build_halo);
 }
 
-void GraphGpuWrapper::clear_shard_graph(int etype_num, int gpu_num) {
+void GraphGpuWrapper::clear_subgraph(int etype_num, int gpu_num) {
   ((GpuPsGraphTable *)graph_table)
-    ->cpu_graph_table_->clear_shard_graph_table();
+    ->cpu_graph_table_->clear_subgraph_table();
 
   // for (int i = 0; i < etype_num; ++i)
   //   ((GpuPsGraphTable *)graph_table) -> clear_graph_info(i);
@@ -287,7 +289,7 @@ void GraphGpuWrapper::upload_batch(int type,
           g->cpu_graph_table_->make_gpu_ps_graph(idx, ids[i]);
       g->build_graph_on_single_gpu(sub_graph, i, idx);
       sub_graph.release_on_cpu();
-      VLOG(0) << "sub graph on gpu " << i << " is built";
+      VLOG(0) << "subgraph on gpu " << i << " is built";
       return 0;
     }));
   }
