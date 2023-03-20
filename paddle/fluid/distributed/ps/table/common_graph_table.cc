@@ -1548,19 +1548,34 @@ int GraphTable::metis_partition_coregraph(int subgraph_num,
       idx_t nWeights = 1;                // 节点权重维数
       idx_t objval;                      // 目标函数值
       int ret = -1;
+      idx_t options[METIS_NOPTIONS];
 
-      if (part_num <= 8) {
-        ret = METIS_PartGraphRecursive(&node_num, &nWeights, xadj.data(), adjncy.data(),
-                                       NULL, NULL, NULL, &part_num, NULL,
-                                       NULL, NULL, &objval, part_res.data());
-      }
-      else {
-        ret = METIS_PartGraphKway(&node_num, &nWeights, xadj.data(), adjncy.data(),
-                                  NULL, NULL, NULL, &part_num, NULL,
-                                  NULL, NULL, &objval, part_res.data());
-      }
+      // For Kway
+      // METIS_OPTION_OBJTYPE, METIS_OPTION_CTYPE, METIS_OPTION_IPTYPE,
+      // METIS_OPTION_RTYPE, METIS_OPTION_NO2HOP, METIS_OPTION_NCUTS,
+      // METIS_OPTION_NITER, METIS_OPTION_UFACTOR, METIS_OPTION_MINCONN,
+      // METIS_OPTION_CONTIG, METIS_OPTION_SEED, METIS_OPTION_NUMBERING,
+      // METIS_OPTION_DBGLVL
+      METIS_SetDefaultOptions(options);
+      options[METIS_OPTION_OBJTYPE] = METIS_OBJTYPE_CUT;
+      options[METIS_OPTION_NUMBERING] = 0;
+      options[METIS_OPTION_MINCONN] = 0;
 
-      VLOG(0) << "METIS Completed for " << part_num << " subgraphs, objval = " << objval << ", status = " << ret;
+
+      // ret = METIS_PartGraphRecursive(&node_num, &nWeights, xadj.data(), adjncy.data(),
+      //                                 NULL, NULL, NULL, &part_num, NULL,
+      //                                 NULL, NULL, &objval, part_res.data());
+    
+      ret = METIS_PartGraphKway(&node_num, &nWeights, xadj.data(), adjncy.data(),
+                                NULL, NULL, NULL, &part_num, NULL,
+                                NULL, NULL, &objval, part_res.data());
+
+      if (ret == METIS_OK) {
+        VLOG(0) << "METIS Completed for " << part_num << " subgraphs, objval = " << objval << ", status = " << ret;
+      }
+      if (ret == METIS_ERROR_INPUT) VLOG(0) << "METIS_ERROR_INPUT";
+      if (ret == METIS_ERROR_MEMORY) VLOG(0) << "METIS_ERROR_MEMORY";
+      if (ret == METIS_ERROR) VLOG(0) << "METIS_ERROR";
     }
 
     void print_csr(void) {
@@ -1600,32 +1615,57 @@ int GraphTable::metis_partition_coregraph(int subgraph_num,
   std::vector<std::future<std::pair<idx_t, idx_t>>> tasks;
   part_g2m.resize(shard_num);
 
+  // for (int part_id = 0; part_id < shard_num; ++part_id) {
+  //   tasks.push_back(_shards_task_pool[part_id % task_pool_size_]->enqueue(
+  //     [&, part_id]() mutable -> std::pair<idx_t, idx_t> {
+  //       auto &pg2m = part_g2m[part_id];
+  //       idx_t part_node_cnt = 0;
+  //       idx_t part_neighbor_cnt = 0;
+  //       for (int idx = 0; idx < id_to_edge.size(); ++idx) {
+  //         auto node_type = paddle::string::split_string<std::string>(id_to_edge[idx], "2");
+  //         int src_idx = feature_to_id[node_type[0]];
+  //         auto& shards = edge_shards[idx][part_id]->get_bucket();
+  //         for (auto node : shards) {
+  //           auto uid = node->get_id();
+  //           auto u = std::make_pair(src_idx, uid);
+  //           // if (find_node(1, src_idx, node->get_id()) == nullptr)
+  //           //   VLOG(0) << "Error Vertex " << u.first << '-' << src_idx << ' ' << node->get_id() << '-' << u.second;
+  //           if (pg2m.find(u) == pg2m.end()) {
+  //             pg2m[u] = {part_node_cnt++, part_neighbor_cnt};
+  //             for (auto idx : search_graphs[src_idx]) {
+  //               auto _node = find_node(0, idx, uid);
+  //               if (_node != nullptr)
+  //                 part_neighbor_cnt += _node->get_neighbor_size();
+  //             }
+  //           }
+  //         }
+  //       }
+  //       return {part_node_cnt, part_neighbor_cnt};
+  //     }));
+  // }
+
   for (int part_id = 0; part_id < shard_num; ++part_id) {
     tasks.push_back(_shards_task_pool[part_id % task_pool_size_]->enqueue(
       [&, part_id]() mutable -> std::pair<idx_t, idx_t> {
         auto &pg2m = part_g2m[part_id];
-        idx_t part_node_cnt = 0;
-        idx_t part_neighbor_cnt = 0;
-        for (int idx = 0; idx < id_to_edge.size(); ++idx) {
-          auto node_type = paddle::string::split_string<std::string>(id_to_edge[idx], "2");
-          int src_idx = feature_to_id[node_type[0]];
-          auto& shards = edge_shards[idx][part_id]->get_bucket();
-          for (auto node : shards) {
-            auto uid = node->get_id();
-            auto u = std::make_pair(src_idx, uid);
-            // if (find_node(1, src_idx, node->get_id()) == nullptr)
-            //   VLOG(0) << "Error Vertex " << u.first << '-' << src_idx << ' ' << node->get_id() << '-' << u.second;
+        idx_t part_v_cnt = 0;
+        idx_t part_e_cnt = 0;
+        for (int u_idx = 0; u_idx < id_to_feature.size(); ++u_idx) {
+          auto& shards = feature_shards[u_idx][part_id]->get_bucket();
+          for (auto feat_ptr : shards) {
+            auto u_id = feat_ptr->get_id();
+            auto u = std::make_pair(u_idx, u_id);
             if (pg2m.find(u) == pg2m.end()) {
-              pg2m[u] = {part_node_cnt++, part_neighbor_cnt};
-              for (auto idx : search_graphs[src_idx]) {
-                auto _node = find_node(0, idx, uid);
-                if (_node != nullptr)
-                  part_neighbor_cnt += _node->get_neighbor_size();
+              pg2m[u] = {part_v_cnt++, part_e_cnt};
+              for (auto e_idx : search_graphs[u_idx]) {
+                auto u_ptr = find_node(0, e_idx, u_id);
+                if (u_ptr != nullptr)
+                  part_e_cnt += u_ptr->get_neighbor_size();
               }
             }
           }
         }
-        return {part_node_cnt, part_neighbor_cnt};
+        return {part_v_cnt, part_e_cnt};
       }));
   }
 
@@ -1648,20 +1688,18 @@ int GraphTable::metis_partition_coregraph(int subgraph_num,
         auto xadj_offset = suffix_cnt[part_id];
         auto adjncy_offset = suffix_neighbor_cnt[part_id];
         for (auto u_pair : part_g2m[part_id]) {
-          m_csr.xadj[xadj_offset + u_pair.second.first] = adjncy_offset + u_pair.second.second;
-          size_t neighbor_cnt = 0;
+          size_t neighbor_pos = adjncy_offset + u_pair.second.second;
+          m_csr.xadj[xadj_offset + u_pair.second.first] = neighbor_pos;
+          
           for (auto idx : search_graphs[u_pair.first.first]) {
-            auto node_type = paddle::string::split_string<std::string>(id_to_edge[idx], "2");
-            int dst_idx = feature_to_id[node_type[1]];
-
+            int dst_idx = get_idx(idx, 1);
             auto node = find_node(0, idx, u_pair.first.second);
             for (size_t i = 0; i < node->get_neighbor_size(); ++i) {
-              auto vid = node->get_neighbor_id(i);
-              auto& vpart = part_g2m[vid % shard_num];
-              auto v = std::make_pair(dst_idx, vid);
+              auto v_id = node->get_neighbor_id(i);
+              auto& vpart = part_g2m[v_id % shard_num];
+              auto v = std::make_pair(dst_idx, v_id);
               if (vpart.find(v) != vpart.end()) {
-                m_csr.adjncy[adjncy_offset + u_pair.second.second + neighbor_cnt] = vpart[v].first;
-                ++neighbor_cnt;
+                m_csr.adjncy[neighbor_pos++] = vpart[v].first + suffix_cnt[v_id % shard_num];
               }
               else VLOG(0) << "Wrong in Building CSR for METIS.";
             }
@@ -1890,7 +1928,7 @@ int GraphTable::build_coregraph(int subgraph_num,
         for (auto e_ptr : shards) {
           auto u_id = e_ptr->get_id();
           if (find_node(1, u_idx, u_id) == nullptr) {
-            VLOG(0) << u_id << "does not have features.";
+            VLOG(0) << u_id << " does not have features.";
             feature_shards[u_idx][part_id]->add_feature_node(u_id, false);
           }
         }
@@ -1910,7 +1948,7 @@ int GraphTable::build_coregraph(int subgraph_num,
       quick_partition_coregraph(subgraph_num, core_vertices, vertex_colors);
     }
     else {
-      // normal_partition_coregraph(subgraph_num, core_nodes, core_features);
+      random_partition_coregraph(subgraph_num, core_vertices, vertex_colors);
     }
   }
   // write_coregraph(subgraph_num, core_nodes, core_features, vertex_colors, subgraph_path);
@@ -1968,6 +2006,35 @@ int GraphTable::normal_partition_coregraph(int subgraph_num,
   }
 
   // output result
+  return 0;
+}
+
+int GraphTable::random_partition_coregraph(int subgraph_num,
+                                           std::vector<std::vector<std::vector<std::vector<u_int64_t>>>>& core_vertices,
+                                           std::vector<std::vector<std::map<uint64_t, int>>>& vertex_colors) {
+  std::vector<std::future<int64_t>> tasks;
+  for (int part_id = 0; part_id < shard_num; ++part_id) {
+    tasks.push_back(_shards_task_pool[part_id % task_pool_size_]->enqueue(
+      [&, part_id]() -> int64_t {
+        std::random_device rd;
+        // std::default_random_engine gen(rd());
+        std::mt19937 gen(rd());
+        std::uniform_int_distribution<int> sg_id_random(0, subgraph_num - 1);
+
+        for (int u_idx = 0; u_idx < id_to_feature.size(); ++u_idx) {
+          auto& shards = feature_shards[u_idx][part_id]->get_bucket();
+          for (auto u_ptr : shards) {
+            auto u_id = u_ptr->get_id();
+            int sg_id = sg_id_random(gen);
+            core_vertices[part_id][u_idx][sg_id].push_back(u_id);
+            vertex_colors[u_idx][part_id][u_id] = sg_id;
+          }
+        }
+        return 0;
+      }));
+  }
+  for (size_t i = 0; i < tasks.size(); i++) tasks[i].get();
+  VLOG(0) << "Random Partition Completed.";
   return 0;
 }
 
@@ -2104,18 +2171,23 @@ int GraphTable::write_coregraph(int subgraph_num,
   
   std::vector<std::vector<std::vector<uint64_t>>> part_v_cnt(shard_num);
   std::vector<std::vector<std::vector<uint64_t>>> part_e_cnt(shard_num);
+  std::vector<std::vector<std::vector<uint64_t>>> part_e_sum(shard_num);
 
   for (int part_id = 0; part_id < shard_num; ++part_id) {
     tasks.push_back(_shards_task_pool[part_id % task_pool_size_]->enqueue(
       [&, part_id]() mutable -> int64_t {
         part_v_cnt[part_id].resize(id_to_feature.size());
         part_e_cnt[part_id].resize(id_to_edge.size());
+        part_e_sum[part_id].resize(id_to_edge.size());
 
         for (int i = 0; i < id_to_feature.size(); ++i)
           part_v_cnt[part_id][i].resize(subgraph_num);
-        for (int i = 0; i < id_to_edge.size(); ++i)
+        
+        for (int i = 0; i < id_to_edge.size(); ++i) {
           part_e_cnt[part_id][i].resize(subgraph_num);
-
+          part_e_sum[part_id][i].resize(subgraph_num);
+        }
+        
         for (int u_idx = 0; u_idx < id_to_feature.size(); ++u_idx) {
           for (int sg_id = 0; sg_id < subgraph_num; ++sg_id) {
             std::ofstream *fout_e = new std::ofstream[id_to_edge.size()];
@@ -2157,6 +2229,7 @@ int GraphTable::write_coregraph(int subgraph_num,
                     if (sg_id == vertex_colors[v_idx][v_id % shard_num][v_id])
                       sg_ngb.push_back(v_id);
                   }
+                  part_e_sum[part_id][e_idx][sg_id] += deg;
 
                   uint64_t ngb_num = sg_ngb.size();
                   fout_e[e_idx].write((char*)(&u_id), sizeof(uint64_t));
@@ -2191,15 +2264,23 @@ int GraphTable::write_coregraph(int subgraph_num,
     }
   }
 
+  uint64_t graph_e_cnt = 0, graph_e_sum = 0;
   for (int idx = 0; idx < id_to_edge.size(); ++idx) {
+    uint64_t sg_e_cnt = 0, sg_e_sum = 0;
     for (int sg_id = 0; sg_id < subgraph_num; ++sg_id) {
-      uint64_t e_sum = 0;
+      uint64_t e_cnt = 0, e_sum = 0;
       for (int part_id = 0; part_id < shard_num; ++part_id) {
-        e_sum += part_e_cnt[part_id][idx][sg_id];
+        e_cnt += part_e_cnt[part_id][idx][sg_id];
+        e_sum += part_e_sum[part_id][idx][sg_id];
       }
-      VLOG(0) << id_to_edge[idx] << " in coregraph_" << sg_id << " : " << e_sum << " edges";
+      VLOG(0) << id_to_edge[idx] << " in coregraph_" << sg_id << " : " << e_cnt << " / " << e_sum << " edges\t" << 1.0 * e_cnt / e_sum;
+      sg_e_cnt += e_cnt;
+      sg_e_sum += e_sum;
     }
+    graph_e_cnt += sg_e_cnt;
+    graph_e_sum += sg_e_sum;
   }
+  VLOG(0) << "E_CNT = " << graph_e_cnt << ", E_SUM = " << graph_e_sum << "\t" << 1.0 * graph_e_cnt / graph_e_sum;
 
   std::ofstream fout(subgraph_path + "ginfo");
   for (auto node_info : feature_to_id) {

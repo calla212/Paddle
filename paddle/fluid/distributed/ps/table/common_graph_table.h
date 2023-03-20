@@ -594,6 +594,10 @@ class GraphTable : public Table {
                                 std::vector<std::vector<std::vector<std::vector<u_int64_t>>>>& core_vertices,
                                 std::vector<std::vector<std::map<uint64_t, int>>>& vertex_colors);
 
+  int random_partition_coregraph(int subgraph_num,
+                                 std::vector<std::vector<std::vector<std::vector<u_int64_t>>>>& core_vertices,
+                                 std::vector<std::vector<std::map<uint64_t, int>>>& vertex_colors);
+
   int load_subgraph_info(const std::string& spath, int ntype_size);
   
   int32_t prepare_train_subgraph(std::string etype2files,
