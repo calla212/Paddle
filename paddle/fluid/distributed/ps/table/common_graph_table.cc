@@ -1928,7 +1928,7 @@ int GraphTable::build_coregraph(int subgraph_num,
         for (auto e_ptr : shards) {
           auto u_id = e_ptr->get_id();
           if (find_node(1, u_idx, u_id) == nullptr) {
-            VLOG(0) << u_id << " does not have features.";
+            // VLOG(0) << u_id << " does not have features.";
             feature_shards[u_idx][part_id]->add_feature_node(u_id, false);
           }
         }
