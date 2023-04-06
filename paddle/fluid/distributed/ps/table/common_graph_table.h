@@ -539,6 +539,17 @@ class GraphTable : public Table {
   virtual int32_t Initialize(const GraphParameter &config);
   int32_t Load(const std::string &path, const std::string &param);
 
+  struct SubGraphParameter {
+    int halo_mode;
+    
+    int epoch_id, epoch_num, layer_num;
+    
+    double halo_a; // mode 1
+    double halo_b;
+
+    double budget; // mode 2
+  };
+  
   int32_t load_node_and_edge_file(std::string etype2files,
                                   std::string ntype2files,
                                   std::string graph_data_local_path,
@@ -606,11 +617,13 @@ class GraphTable : public Table {
                                  int shard_id,
                                  int part_num,
                                  bool reverse,
-                                 bool load_halo,
-                                 double halo_a, double halo_b, int epoch_id, int epoch_num, int layer_num);
+                                 SubGraphParameter sgp);
 
   int prepare_halograph(std::string path,
                         double halo_a, double halo_b, int epoch_id, int epoch_num, int layer_num);
+
+  int prepare_halograph(std::string path,
+                         const double budget, const int epoch_id, const int epoch_num, const int layer_num);
   
   int get_idx(int e_idx, int uv_pos);
 
@@ -823,6 +836,8 @@ class GraphTable : public Table {
 
   std::vector<std::vector<std::string>> sg_vertex_info;
   std::vector<std::vector<int>> search_graphs;
+  uint64_t tot_v_num, tot_e_num;
+  std::vector<uint64_t> v_num, e_num;
 };
 
 /*

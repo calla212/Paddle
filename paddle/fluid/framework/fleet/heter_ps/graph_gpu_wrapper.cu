@@ -179,11 +179,54 @@ void GraphGpuWrapper::prepare_subgraph(std::string etype2files,
                                        int load_sg_id,
                                        int part_num,
                                        bool reverse,
-                                       bool load_halo=false,
-                                       double halo_a=0.0, double halo_b=0.0, int epoch_id=-1, int epoch_num=-1, int layer_num=-1) {
+                                       int halo_mode=0) {
+  paddle::distributed::GraphTable::SubGraphParameter sgp;
+  sgp.halo_mode = halo_mode;
+  
   ((GpuPsGraphTable *)graph_table)
       ->cpu_graph_table_->prepare_train_subgraph(
-          etype2files, ntype2files, subgraph_path, load_sg_id, part_num, reverse, load_halo, halo_a, halo_b, epoch_id, epoch_num, layer_num);
+          etype2files, ntype2files, subgraph_path, load_sg_id, part_num, reverse, sgp);
+}
+
+void GraphGpuWrapper::prepare_subgraph(std::string etype2files,
+                                       std::string ntype2files,
+                                       std::string subgraph_path,
+                                       int load_sg_id,
+                                       int part_num,
+                                       bool reverse,
+                                       int halo_mode,
+                                       double halo_a, double halo_b, int epoch_id, int epoch_num, int layer_num) {
+  paddle::distributed::GraphTable::SubGraphParameter sgp;
+  sgp.halo_mode = halo_mode;
+  sgp.halo_a = halo_a;
+  sgp.halo_b = halo_b;
+  sgp.epoch_id = epoch_id;
+  sgp.epoch_num = epoch_num;
+  sgp.layer_num = layer_num;
+
+  ((GpuPsGraphTable *)graph_table)
+      ->cpu_graph_table_->prepare_train_subgraph(
+          etype2files, ntype2files, subgraph_path, load_sg_id, part_num, reverse, sgp);
+}
+
+void GraphGpuWrapper::prepare_subgraph(std::string etype2files,
+                                       std::string ntype2files,
+                                       std::string subgraph_path,
+                                       int load_sg_id,
+                                       int part_num,
+                                       bool reverse,
+                                       int halo_mode,
+                                       double budget, int epoch_id, int epoch_num, int layer_num) {
+  paddle::distributed::GraphTable::SubGraphParameter sgp;
+  sgp.halo_mode = halo_mode;
+  sgp.budget = budget;
+  sgp.epoch_id = epoch_id;
+  sgp.epoch_num = epoch_num;
+  sgp.layer_num = layer_num;
+
+  ((GpuPsGraphTable *)graph_table)
+      ->cpu_graph_table_->prepare_train_subgraph(
+          etype2files, ntype2files, subgraph_path, load_sg_id, part_num, reverse, sgp);
 }
 
 void GraphGpuWrapper::build_subgraph(int subgraph_num, int layer_num, std::string subgraph_path, std::string part_method, bool build_halo) {

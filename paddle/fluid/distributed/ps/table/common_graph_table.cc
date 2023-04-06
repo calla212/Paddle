@@ -1139,6 +1139,9 @@ int32_t GraphTable::load_node_and_edge_file(std::string etype2files,
   is_load_reverse_edge = reverse;
   std::string delim = ";";
   size_t total_len = etypes.size() + 1;  // 1 is for node
+  tot_v_num = tot_e_num = 0;
+  v_num.resize(id_to_feature.size());
+  e_num.resize(id_to_edge.size());
 
   std::vector<std::future<int>> tasks;
   for (size_t i = 0; i < total_len; i++) {
@@ -1281,8 +1284,7 @@ int32_t GraphTable::prepare_train_subgraph(std::string etype2files,
                                            int load_sg_id,
                                            int part_num,
                                            bool reverse,
-                                           bool load_halo,
-                                           double halo_a, double halo_b, int epoch_id, int epoch_num, int layer_num) {
+                                           SubGraphParameter sgp) {
   std::string subgraph_data_path = subgraph_path + "sg_" + std::to_string(load_sg_id) + "/";
   std::vector<std::string> etypes;
   std::unordered_map<std::string, std::string> edge_to_edgedir;
@@ -1303,6 +1305,9 @@ int32_t GraphTable::prepare_train_subgraph(std::string etype2files,
     VLOG(0) << "whether reverse: " << reverse;
     is_load_reverse_edge = reverse;
   }
+  tot_v_num = tot_e_num = 0;
+  v_num.resize(id_to_feature.size());
+  e_num.resize(id_to_edge.size());
 
   VLOG(0) << "[Subgraph_ " << load_sg_id << "] etypes size: " << etypes.size() << " ; ntypes size: " << ntypes.size() << " ; shard_vertex size: " << sg_vertex_info.size();
   std::string delim = ";";
@@ -1347,9 +1352,20 @@ int32_t GraphTable::prepare_train_subgraph(std::string etype2files,
   //   this->build_inv_subgraph(idx);
   // }
 
-  if (load_halo) {
+  if (tot_v_num == 0) {
+    for (auto i : v_num) tot_v_num += i;
+  }
+  if (tot_e_num == 0) {
+    for (auto i : e_num) tot_e_num += i;
+  }
+  VLOG(0) << "Load " << tot_v_num << " vertices, " << tot_e_num << " edges.";
+
+  if (sgp.halo_mode) {
     std::string halograph_data_path = subgraph_data_path + "halo/";
-    prepare_halograph(halograph_data_path, halo_a, halo_b, epoch_id, epoch_num, layer_num);
+    if (sgp.halo_mode == 1)
+      prepare_halograph(halograph_data_path, sgp.halo_a, sgp.halo_b, sgp.epoch_id, sgp.epoch_num, sgp.layer_num);
+    if (sgp.halo_mode == 2)
+      prepare_halograph(halograph_data_path, sgp.budget, sgp.epoch_id, sgp.epoch_num, sgp.layer_num);
   }
   return 0;
 }
@@ -1364,7 +1380,7 @@ bool halo_func(double a, double b, double s_val, double dist_val, int epoch_id, 
   return dis(gen) < t;
 }
 
-int GraphTable::prepare_halograph(std::string path,
+int GraphTable::prepare_halograph(std::string path, // Prepare HaloGraph with Node Sampling
                                   double halo_a, double halo_b, int epoch_id, int epoch_num, int layer_num) {
   // v_id[uint64] dist[int] S[double] ngb_num[uint64] node_type[int] ngbs...[uint64] feats...[uint64]
   
@@ -1499,6 +1515,260 @@ int GraphTable::prepare_halograph(std::string path,
   VLOG(0) << "[HaloGraph] Read " << v_sum << " vertices. Pick " << v_cnt << " vertices " << 1.0 * v_cnt / v_sum;
   VLOG(0) << "[HaloGraph] Read " << e_sum << " edges.    Pick " << e_cnt << " edges    " << 1.0 * e_cnt / e_sum;
 
+  VLOG(0) << "Finish : Build HaloGraph";
+  return 0;
+}
+
+int GraphTable::prepare_halograph(std::string path, // Prepare HaloGraph with Random Walk
+                                  const double budget, const int epoch_id, const int epoch_num, const int layer_num) {
+  // v_id[uint64] dist[int] S[double] ngb_num[uint64] node_type[int] ngbs...[uint64] feats...[uint64]
+  
+  std::vector<std::future<int>> tasks;
+  struct HaloInfo {
+    std::vector<uint64_t> ngb;
+    std::vector<uint64_t> ngb_num;
+    std::vector<double> feat;
+    int idx;
+    double score;
+    uint64_t id;
+
+    double cal_score(double weight, double rand_num) {
+      return -logl(rand_num) / weight;
+    }
+  };
+  std::vector<std::vector<std::vector<std::map<uint64_t, HaloInfo*>>>> halo_info(shard_num);
+
+  const int epoch_dist = 1.0 * epoch_id / epoch_num * layer_num + 0.5;
+  const uint64_t seed_num = budget * tot_v_num / epoch_dist;
+  VLOG(0) << "Budget = " << budget << ", Epoch_dist = " << epoch_dist << ", Seed_num = " << seed_num << ' ' << tot_v_num;
+
+  std::vector<uint64_t> part_v_sum(shard_num), part_e_sum(shard_num), part_v_cnt(shard_num), part_e_cnt(shard_num);
+  std::vector<std::priority_queue<std::pair<double, HaloInfo*>>> seed_vertices(shard_num);
+
+  VLOG(0) << "Begin : Load HaloGraph";
+  for (int part_id = 0; part_id < shard_num; ++part_id) {
+    tasks.push_back(
+      _shards_task_pool[part_id % task_pool_size_]->enqueue([&, part_id]() -> int {
+        std::string halo_path = path + "hg-" + std::to_string(part_id);
+        std::ifstream file(halo_path, std::ios::in | std::ios::binary | std::ios::ate);
+        uint64_t local_count = 0;
+        uint64_t local_valid_count = 0;
+        halo_info[part_id].resize(epoch_dist);
+        for (int i = 0; i < epoch_dist; ++i)
+          halo_info[part_id][i].resize(id_to_edge.size());
+  
+        if (!file.is_open()) {
+          VLOG(0) << "Open " << halo_path << " Failed.";
+          return -1;
+        }
+
+        std::streamsize size = file.tellg();
+        file.seekg(0, std::ios::beg);
+        std::vector<char> buffer(size);
+        file.read(buffer.data(), size);
+        file.close();
+
+        char* ptr = buffer.data();
+        char* const beg_ptr = ptr;
+
+        std::random_device rd;  // Will be used to obtain a seed for the random number engine
+        std::mt19937 gen(rd()); // Standard mersenne_twister_engine seeded with rd()
+        std::uniform_real_distribution<double> dis(0.0, 1.0);
+
+        while ((ptr - beg_ptr) < size) {
+          HaloInfo *halo_ptr;
+          uint64_t u_id = *((uint64_t*)ptr);
+          ptr += sizeof(uint64_t);
+          uint32_t u_idx = *ptr;
+          ptr += sizeof(int);
+          uint32_t dist = *ptr;
+          ptr += sizeof(int);
+          double u_weight = *((double*)ptr);
+          ptr += sizeof(double);
+          
+          halo_ptr->idx = u_idx;
+          for (auto e_idx : search_graphs[u_idx]) {
+            uint64_t ngb_num = *((uint64_t*)ptr);
+            ptr += sizeof(uint64_t);
+            halo_ptr->ngb_num.push_back(ngb_num);
+            part_e_sum[part_id] += ngb_num;
+            int v_idx = get_idx(e_idx, 1);
+            for (uint64_t ngb_id = 0; ngb_id < ngb_num; ++ngb_id) {
+              uint64_t v_id = *((uint64_t*)ptr);
+              ptr += sizeof(uint64_t);
+              halo_ptr->ngb.push_back(v_id);
+            }
+          }
+          const int feat_num = sg_vertex_info[u_idx].size();
+          for (int feat_id = 0; feat_id < feat_num; ++feat_id) {
+            uint64_t feat_val = *((uint64_t*)ptr);
+            ptr += sizeof(uint64_t);
+            halo_ptr->feat.push_back(feat_val);
+          }
+
+          auto &hinfo = halo_info[part_id][dist][u_idx];
+          if (hinfo.find(u_id) == hinfo.end()) {
+            halo_ptr->score = halo_ptr->cal_score(u_weight, dis(gen));
+            halo_ptr->id = u_id;
+            part_v_sum[part_id]++;
+            if (dist == epoch_dist) {
+              seed_vertices[part_id].push(std::make_pair(halo_ptr->score, halo_ptr));
+              if (seed_vertices[part_id].size() > seed_num) seed_vertices[part_id].pop();
+            }
+          }
+          else {
+            VLOG(0) << "Deplicated Halo Vertex " << u_id << " (" << id_to_feature[u_idx] << ")"; 
+            delete halo_ptr;
+          }
+        }
+        return 0;
+    }));
+  }
+  for (int i = 0; i < (int)tasks.size(); i++) tasks[i].get();
+  VLOG(0) << "Finish : Load HaloGraph";
+
+  VLOG(0) << "Begin : Pick Trained HaloGraph";
+  tasks.clear();
+  std::priority_queue<std::pair<double, int>> top_part_val;
+  uint64_t remove_cnt = 0, remove_sum = 0;
+  for (int part_id = 0; part_id < shard_num; ++part_id) {
+    top_part_val.push(std::make_pair(seed_vertices[part_id].top().first, part_id));
+    remove_sum += top_part_val.size();
+  }
+  remove_sum -= seed_num;
+  while (remove_cnt++ < remove_sum) {
+    auto val_pair = top_part_val.top();
+    top_part_val.pop();
+    seed_vertices[val_pair.second].pop();
+    top_part_val.push(std::make_pair(seed_vertices[val_pair.second].top().first, val_pair.second));
+  }
+
+  std::vector<std::vector<std::vector<HaloInfo*>>> spl_halo;
+  spl_halo.resize(shard_num);
+  tasks.clear();
+  for (int part_id = 0; part_id < shard_num; ++part_id) {
+    tasks.push_back(
+      _shards_task_pool[part_id % task_pool_size_]->enqueue([&, part_id]() -> int {
+        spl_halo[part_id].resize(shard_num);
+        while (!seed_vertices[part_id].empty()) {
+          auto u_pair = seed_vertices[part_id].top();
+          seed_vertices[part_id].pop();
+          auto u_ptr = u_pair.second;
+          auto u_id = u_ptr->id;
+          spl_halo[part_id][part_id].push_back(u_ptr);
+          for (int dist = epoch_dist - 1; dist >= 1; --dist) {
+            uint64_t ngb_offset = 0;
+            double val_min = -1.0;
+            HaloInfo* spl_ptr;
+            // auto spl_ptr = std::make_shared<HaloInfo>();
+            int u_idx = u_ptr->idx;
+            for (int i = 0; i < search_graphs[u_idx].size(); ++i) {
+              int v_idx = get_idx(search_graphs[u_idx][i], 1);
+              for (uint64_t ngb_id = 0; ngb_id < u_ptr->ngb_num[i]; ++ngb_id) {
+                auto v_id = u_ptr->ngb[ngb_offset + ngb_id];
+                auto &hinfo = halo_info[v_id % shard_num][dist][v_idx];
+                if (hinfo.find(v_id) != hinfo.end()) {
+                  if (hinfo[v_id]->score < val_min || val_min < 0) {
+                    val_min = hinfo[v_id]->score;
+                  }
+                }
+                else VLOG(0) << "Missing HaloVertex " << v_id << " (" << v_idx << ")";
+              }
+              ngb_offset += u_ptr->ngb_num[i];
+            }
+            spl_halo[part_id][(spl_ptr->id) % shard_num].push_back(spl_ptr);
+            u_ptr = spl_ptr;
+          }
+        }
+        return 0;
+    }));
+  }
+  for (int i = 0; i < (int)tasks.size(); i++) tasks[i].get();
+
+  
+  std::vector<std::vector<std::vector<std::map<uint64_t, std::vector<uint64_t>>>>> halo_edges(shard_num);
+  tasks.clear();
+  for (int part_id = 0; part_id < shard_num; ++part_id) {
+    tasks.push_back(
+      _shards_task_pool[part_id % task_pool_size_]->enqueue([&, part_id]() -> int {
+        halo_edges[part_id].resize(shard_num);
+        for (int i = 0; i < shard_num; ++i)
+          halo_edges[part_id][i].resize(id_to_edge.size());
+
+        for (int _part_id = 0; _part_id < shard_num; ++_part_id) {
+          for (auto u_ptr : spl_halo[_part_id][part_id]) {
+            int u_idx = u_ptr->idx;
+            auto u_id = u_ptr->id;
+            uint64_t ngb_offset = 0;
+
+            for (int i = 0; i < search_graphs[u_idx].size(); ++i) {
+              auto e_ptr = edge_shards[search_graphs[u_idx][i]][part_id]->add_graph_node(u_id);
+              if (e_ptr != nullptr) {
+                int v_idx = get_idx(search_graphs[u_idx][i], 1);
+                for (uint64_t ngb_id = 0; ngb_id < u_ptr->ngb_num[i]; ++ngb_id) {
+                  auto v_id = u_ptr->ngb[ngb_offset + ngb_id];
+                  if (find_node(0, v_idx, v_id) != nullptr) {
+                    halo_edges[part_id][v_id % shard_num][v_idx][v_id].push_back(u_id);
+                    halo_edges[part_id][part_id][u_idx][u_id].push_back(v_id);
+                  }
+                }
+                ngb_offset += u_ptr->ngb_num[i];
+              }
+              else VLOG(0) << "Build EdgeVertex for Vertex " << u_id << " with Edge " << id_to_edge[search_graphs[u_idx][i]] << " Failed.";
+            }
+
+            auto f_ptr = feature_shards[u_idx][part_id]->add_feature_node(u_id, false);
+            if (f_ptr != NULL) {
+              auto& feature_list = sg_vertex_info[u_idx];
+              const int feat_num = feature_list.size();
+              for (int feat_id = 0; feat_id < feat_num; ++feat_id) {
+                uint64_t feat_val = u_ptr->feat[feat_id];
+                parse_shard_feature(u_idx, feature_list[feat_id], feat_val, f_ptr);
+              }
+            }
+            else VLOG(0) << "Build FeatureVertex for Vertex " << u_id << " (" << id_to_feature[u_idx] << ") Failed.";
+          }
+        }
+        return 0;
+    }));
+  }
+  for (int i = 0; i < (int)tasks.size(); i++) tasks[i].get();
+
+  bool is_weighted = false;
+  float weight = 1.0;
+  tasks.clear();
+  for (int part_id = 0; part_id < shard_num; ++part_id) {
+    tasks.push_back(
+      _shards_task_pool[part_id % task_pool_size_]->enqueue([&, part_id]() -> int {
+        for (int _part_id = 0; _part_id < shard_num; ++_part_id) {
+          for (int e_idx = 0; e_idx < id_to_edge.size(); ++e_idx) {
+            int v_idx = get_idx(e_idx, 1);
+            for (auto halo_edge : halo_edges[_part_id][part_id][e_idx]) {
+              uint64_t u_id = halo_edge.first;
+              auto u_ptr = find_node(0, e_idx, u_id);
+              for (auto v_id : halo_edge.second) {
+                u_ptr->build_edges(is_weighted);
+                u_ptr->add_edge(v_id, weight);
+                part_e_cnt[part_id]++;
+              }
+            }
+          }
+        }
+        return 0;
+    }));
+  }
+  for (int i = 0; i < (int)tasks.size(); i++) tasks[i].get();
+
+  uint64_t v_sum = 0, v_cnt = 0, e_sum = 0, e_cnt = 0;
+  for (int i = 0; i < shard_num; ++i) {
+    v_sum += part_v_sum[i];
+    v_cnt += part_v_cnt[i];
+    e_sum += part_e_sum[i];
+    e_cnt += part_e_cnt[i];
+  }
+  e_sum <<= 1;
+  VLOG(0) << "[HaloGraph] Read " << v_sum << " vertices. Pick " << v_cnt << " vertices " << 1.0 * v_cnt / v_sum;
+  VLOG(0) << "[HaloGraph] Read " << e_sum << " edges.    Pick " << e_cnt << " edges    " << 1.0 * e_cnt / e_sum;
   VLOG(0) << "Finish : Build HaloGraph";
   return 0;
 }
@@ -2329,76 +2599,52 @@ int GraphTable::build_halograph(const int subgraph_num,
                                 const std::string& subgraph_path) {
   std::vector<std::future<int64_t>> tasks;
   struct HaloVertex {
-    std::vector<uint64_t> color_cnt, color_deg, color_sum;
+    std::vector<uint64_t> color_deg;
     std::vector<int> color_dist;
-    std::vector<double> color_weight;
 
     HaloVertex(int subgraph_num) {
-      color_cnt.clear();
-      color_cnt.resize(subgraph_num);
       color_deg.clear();
       color_deg.resize(subgraph_num);
-      color_sum.clear();
-      color_sum.resize(subgraph_num);
       color_dist.clear();
       color_dist.resize(subgraph_num);
-      color_weight.clear();
-      color_weight.resize(subgraph_num);
     }
 
-    // void print_dist(void) {
-    //   for (auto i : color_dist) std::cout << i << " ";
-    //   std::cout << std::endl;
-    // }
-
-    inline void set_dist(int color, int dist) {
-      if (color_dist[color] == 0) {
-        color_dist[color] = dist;
-      }
-    }
-
-    inline void add_cnt(int color) {
-      ++color_cnt[color];
-    }
-
-    inline void add_halo_cnt(HaloVertex *ptr, int color) {
-      for (int color_id = 0; color_id < color_dist.size(); ++color_id) {
-        if (ptr->color_dist[color_id] != 0) ++color_cnt[color_id];
-      }
-      ++color_cnt[color];
-    }
-
-    void aggregate_sum(int layer, int color, HaloVertex *ptr) {
-      if (layer == 1) {
-        color_sum[color] += ptr->color_cnt[color];
-        ++color_deg[color];
+    void update_halodeg(int color, int dist) {
+      auto& c_dist = color_dist[color];
+      if (c_dist == 0) {
+        c_dist = dist;
+        color_deg[color] = 1;
       }
       else {
-        color_sum[color] += ptr->color_weight[color];
+        if (c_dist > dist) {
+          c_dist = dist;
+          color_deg[color] = 1;
+        }
+        else {
+          color_deg[color] += (c_dist == dist);
+        }
       }
     }
 
-    void aggregate_cal(double layer_weight) {
-      for (int i = 0; i < color_weight.size(); ++i) {
-        if (color_dist[i])
-          color_weight[i] = 1.0 * color_sum[i] / color_deg[i] + layer_weight * color_cnt[i];
-        color_sum[i] = 0;
+    double get_norm_weight(int color, uint64_t max_num) {
+      if (color_dist[color]) {
+        return 1.0 * color_deg[color] / max_num;
       }
+      return 0.0;
     }
   };
 
   std::vector<std::vector<std::map<uint64_t, HaloVertex*>>> halo_vertices;
   halo_vertices.resize(shard_num);
-  std::vector<std::vector<double>> part_max;
-  part_max.resize(shard_num);
+  std::vector<std::vector<uint64_t>> part_max_deg;
+  part_max_deg.resize(shard_num);
 
   VLOG(0) << "Begin : Build HaloGraph";
-  // Build HaloGraph : HaloDeg + NGB for NS
   for (int part_id = 0; part_id < shard_num; ++part_id) {
     tasks.push_back(_shards_task_pool[part_id % task_pool_size_]->enqueue(
       [&, part_id]() -> int64_t {
         halo_vertices[part_id].resize(id_to_feature.size());
-        part_max[part_id].resize(subgraph_num);
+        part_max_deg[part_id].resize(subgraph_num);
         for (int u_idx = 0; u_idx < id_to_edge.size(); ++u_idx) {
           for (int sg_id = 0; sg_id < subgraph_num; ++sg_id) {
             HaloVertex* hv_ptr = new HaloVertex(subgraph_num);
@@ -2431,13 +2677,18 @@ int GraphTable::build_halograph(const int subgraph_num,
                         frontier.push_back(x);
                         int x_color = vertex_colors[x_idx][x_id % shard_num][x_id];
                         if (x_color != sg_id) {
-                          hv_ptr->set_dist(x_color, layer_dist);
+                          hv_ptr->update_halodeg(x_color, layer_dist);
                         }
                       }
                     }
                   }
                 }
                 frontier_size = frontier.size();
+              }
+              for (int sg_id = 0; sg_id < subgraph_num; ++sg_id) {
+                if (hv_ptr->color_dist[sg_id]) {
+                  part_max_deg[part_id][sg_id] = std::max(part_max_deg[part_id][sg_id], hv_ptr->color_deg[sg_id]);
+                }
               }
               halo_vertices[part_id][u_idx][u_id] = hv_ptr;
             }
@@ -2447,69 +2698,16 @@ int GraphTable::build_halograph(const int subgraph_num,
       }));
   }
   for (size_t i = 0; i < tasks.size(); i++) tasks[i].get();
-  
-  tasks.clear();
-  for (int part_id = 0; part_id < shard_num; ++part_id) {
-    tasks.push_back(_shards_task_pool[part_id % task_pool_size_]->enqueue(
-      [&, part_id]() mutable -> int64_t {
-        for (int layer = 1; layer <= layer_num; ++layer) {
-          const double layer_weight = 1.0 * layer / layer_num;
-          for (int u_idx = 0; u_idx < id_to_feature.size(); ++u_idx) {
-            for (auto halo_pair : halo_vertices[part_id][u_idx]) {
-              auto u_id = halo_pair.first;
-              auto halo_ptr = halo_pair.second;
-              for (auto e_idx : search_graphs[u_idx]) {
-                auto u_ptr = find_node(0, e_idx, u_id);
-                if (u_ptr != nullptr) {
-                  auto deg = u_ptr->get_neighbor_size();
-                  int v_idx = get_idx(e_idx, 1);
 
-                  if (layer == 1) {
-                    for (uint64_t ngb_id = 0; ngb_id < deg; ++ngb_id) {
-                      auto v_id = u_ptr->get_neighbor_id(ngb_id);
-                      halo_ptr->add_halo_cnt(halo_vertices[v_id % shard_num][v_idx][v_id], vertex_colors[v_idx][v_id % shard_num][v_id]);
-                    }
-                  }
-                  for (uint64_t ngb_id = 0; ngb_id < deg; ++ngb_id) {
-                    auto v_id = u_ptr->get_neighbor_id(ngb_id);
-                    halo_ptr->aggregate_sum(layer, vertex_colors[v_idx][v_id % shard_num][v_id], halo_vertices[v_id % shard_num][v_idx][v_id]);
-                  }
-                }
-              }
-            }
-          }
-          for (int u_idx = 0; u_idx < id_to_feature.size(); ++u_idx) {
-            for (auto halo_pair : halo_vertices[part_id][u_idx]) {
-              auto halo_ptr = halo_pair.second;
-              halo_ptr->aggregate_cal(layer_num);
-            }
-          }
-          if (layer == layer_num) {
-            for (int u_idx = 0; u_idx < id_to_feature.size(); ++u_idx) {
-              for (auto halo_pair : halo_vertices[part_id][u_idx]) {
-                auto halo_ptr = halo_pair.second;
-                for (int sg_id = 0; sg_id < subgraph_num; ++sg_id) {
-                  if (halo_ptr->color_dist[sg_id]) {
-                    part_max[part_id][sg_id] = std::max(part_max[part_id][sg_id], halo_ptr->color_weight[sg_id]);
-                  }
-                }
-              }
-            }
-          }
-        }
-        return 0;
-      }));
-  }
-  for (size_t i = 0; i < tasks.size(); i++) tasks[i].get();
-  VLOG(0) << "Finish : Build HaloGraph";
-
-  std::vector<double> halo_max(subgraph_num, -1);
+  std::vector<uint64_t> halodeg_max(subgraph_num, 0);
   for (int part_id = 0; part_id < shard_num; ++part_id) {
     for (int sg_id = 0; sg_id < subgraph_num; ++sg_id) {
-      if (halo_max[sg_id] < 0 || part_max[part_id][sg_id] > halo_max[sg_id])
-        halo_max[sg_id] = part_max[part_id][sg_id];
+      if (part_max_deg[part_id][sg_id] > halodeg_max[sg_id])
+        halodeg_max[sg_id] = part_max_deg[part_id][sg_id];
     }
   }
+
+  VLOG(0) << "Finish : Build HaloGraph";
 
   std::vector<std::vector<uint64_t>> part_v_cnt(shard_num);
   std::vector<std::vector<uint64_t>> part_e_cnt(shard_num);
@@ -2534,16 +2732,13 @@ int GraphTable::build_halograph(const int subgraph_num,
             auto u_id = halo_pair.first;
             auto halo_ptr = halo_pair.second;
             for (int sg_id = 0; sg_id < subgraph_num; ++sg_id) {
-              // if (part_id == 0) {
-              //   std::cout << u_id << ' ';
-              //   halo_ptr->print_dist();
-              // }
-              if (halo_ptr->color_dist[sg_id] != 0) {
+              int u_dist = halo_ptr->color_dist[sg_id];
+              if (u_dist != 0) {
                 part_v_cnt[part_id][sg_id]++;
                 fouts[sg_id].write((char*)(&u_id), sizeof(uint64_t));
                 fouts[sg_id].write((char*)(&u_idx), sizeof(int));
-                double op_w = halo_ptr->color_weight[sg_id] / halo_max[sg_id];
-                fouts[sg_id].write((char*)(&halo_ptr->color_dist[sg_id]), sizeof(int));
+                double op_w = halo_ptr->get_norm_weight(sg_id, halodeg_max[sg_id]);
+                fouts[sg_id].write((char*)(&u_dist), sizeof(int));
                 fouts[sg_id].write((char*)(&op_w), sizeof(double));
 
                 for (auto e_idx : search_graphs[u_idx]) {
@@ -2554,7 +2749,7 @@ int GraphTable::build_halograph(const int subgraph_num,
                     std::vector<uint64_t> sg_ngb;
                     for (uint64_t ngb_id = 0; ngb_id < deg; ++ngb_id) {
                       auto v_id = u_ptr->get_neighbor_id(ngb_id);
-                      if (sg_id == vertex_colors[v_idx][v_id % shard_num][v_id] || halo_vertices[v_id % shard_num][v_idx][v_id]->color_dist[sg_id] != 0)
+                      if (sg_id == vertex_colors[v_idx][v_id % shard_num][v_id] || halo_vertices[v_id % shard_num][v_idx][v_id]->color_dist[sg_id] == u_dist - 1 )
                         sg_ngb.push_back(v_id);
                     }
                     uint64_t ngb_num = sg_ngb.size();
@@ -2935,10 +3130,14 @@ int32_t GraphTable::load_nodes(const std::string &path, std::string node_type, i
     }
   }
 
-  if (load_idx >= 0)
+  if (load_idx >= 0) {
     VLOG(0) << valid_count << "/" << count << " nodes in node_type[" << id_to_feature[load_idx] << "] are loaded successfully!";
-  else
+    v_num[load_idx] = valid_count;
+  }
+  else {
     VLOG(0) << valid_count << "/" << count << " nodes in node_type[" << node_type << "] are loaded successfully!";
+    v_num[feature_to_id[node_type]] = valid_count;
+  }
   return 0;
 }
 
@@ -3142,6 +3341,7 @@ int32_t GraphTable::load_edges(const std::string &path,
   }
   VLOG(0) << valid_count << "/" << count << " edge_type[" << edge_type
           << "] edges are loaded successfully";
+  e_num[edge_to_id[edge_type]] = valid_count;
 
 #ifdef PADDLE_WITH_HETERPS
   if (search_level == 2) {

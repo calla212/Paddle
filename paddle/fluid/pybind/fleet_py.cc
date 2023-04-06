@@ -375,7 +375,15 @@ void BindGraphGpuWrapper(py::module* m) {
       .def("load_edge_file", &GraphGpuWrapper::load_edge_file)
       .def("load_node_and_edge", &GraphGpuWrapper::load_node_and_edge)
       .def("build_subgraph", &GraphGpuWrapper::build_subgraph)
-      .def("prepare_subgraph", &GraphGpuWrapper::prepare_subgraph)
+      .def("prepare_subgraph",
+           py::overload_cast<std::string, std::string, std::string, int, int, bool, int>(
+               &GraphGpuWrapper::prepare_subgraph))
+      .def("prepare_subgraph",
+           py::overload_cast<std::string, std::string, std::string, int, int, bool, int, double, double, int, int, int>(
+               &GraphGpuWrapper::prepare_subgraph))
+      .def("prepare_subgraph",
+           py::overload_cast<std::string, std::string, std::string, int, int, bool, int, double, int, int, int>(
+               &GraphGpuWrapper::prepare_subgraph))
       .def("clear_subgraph", &GraphGpuWrapper::clear_subgraph)
       .def("upload_batch",
            py::overload_cast<int, int, int, const std::string&>(
